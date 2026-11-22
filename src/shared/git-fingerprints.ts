@@ -4,6 +4,8 @@ import {
   parseChangeNote,
 } from "../change-note/rules.ts";
 import {
+  type DiffEntry,
+  diffResolvedRange,
   type GitResult,
   isNotePath,
   isPlainGitFileMode,
@@ -18,32 +20,10 @@ type BaseNoteHistory = {
   readonly ancestorPaths: ReadonlySet<string>;
 };
 
-type LogStep =
-  | { readonly kind: "delete"; readonly path: string }
-  | {
-      readonly kind: "rename";
-      readonly oldPath: string;
-      readonly newPath: string;
-    }
-  | {
-      readonly kind: "copy";
-      readonly oldPath: string;
-      readonly newPath: string;
-    }
-  | {
-      readonly kind: "add";
-      readonly mode: string;
-      readonly blob: string;
-      readonly path: string;
-    };
-
-type CommitSection = {
-  readonly commit: string;
-  readonly parents: readonly string[];
-  readonly steps: readonly LogStep[];
+type CommitAncestry = {
+  readonly paths: Set<string>;
+  readonly blobs: Set<string>;
 };
-
-const sectionMarker = "\u0001";
 
 async function collectFolderNotes(
   programs: ProgramsCapability,
@@ -54,6 +34,7 @@ async function collectFolderNotes(
   allowedAffects: ReadonlySet<string>,
   fingerprints: Set<string>,
   paths: Set<string>,
+  blobs: Set<string>,
 ): Promise<GitResult<undefined>> {
   const listed = await runReadOnlyGit(programs, parsePath, root, "ls-tree", [
     "-r",
@@ -72,6 +53,7 @@ async function collectFolderNotes(
     const [mode = "", type = "", blob = ""] = record.slice(0, tab).split(" ");
     if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "") continue;
     paths.add(path);
+    blobs.add(blob);
     const content = await runReadOnlyGit(
       programs,
       parsePath,
@@ -84,80 +66,6 @@ async function collectFolderNotes(
     if (parsed.ok) fingerprints.add(canonicalChangeNoteKey(parsed.note));
   }
   return { ok: true, value: undefined };
-}
-
-function parseStepAt(
-  fields: readonly string[],
-  index: number,
-  header: string,
-): { readonly step: LogStep | undefined; readonly nextIndex: number } {
-  const [, mode = "", , blob = "", status = ""] = header.split(" ");
-  if (status.startsWith("R") || status.startsWith("C")) {
-    const oldPath = fields[index + 1];
-    const newPath = fields[index + 2];
-    const step =
-      oldPath !== undefined && newPath !== undefined
-        ? {
-            kind: status.startsWith("R")
-              ? ("rename" as const)
-              : ("copy" as const),
-            oldPath,
-            newPath,
-          }
-        : undefined;
-    return { step, nextIndex: index + 3 };
-  }
-  const path = fields[index + 1];
-  if (status === "D" && path !== undefined)
-    return { step: { kind: "delete", path }, nextIndex: index + 2 };
-  if (status === "A" && path !== undefined)
-    return { step: { kind: "add", mode, blob, path }, nextIndex: index + 2 };
-  return { step: undefined, nextIndex: index + 2 };
-}
-
-function parseSectionHeader(trimmed: string):
-  | {
-      readonly commit: string;
-      readonly parents: readonly string[];
-      readonly steps: LogStep[];
-    }
-  | undefined {
-  const [commit = "", ...parents] = trimmed
-    .slice(1)
-    .trim()
-    .split(" ")
-    .filter((part) => part !== "");
-  return commit === "" ? undefined : { commit, parents, steps: [] };
-}
-
-function parseLogSections(rawLogOutput: string): readonly CommitSection[] {
-  const fields = splitNul(rawLogOutput);
-  const sections: {
-    readonly commit: string;
-    readonly parents: readonly string[];
-    readonly steps: LogStep[];
-  }[] = [];
-  let current: (typeof sections)[number] | undefined;
-  let index = 0;
-  while (index < fields.length) {
-    const token = fields[index] ?? "";
-    const trimmed = token.startsWith("\n") ? token.slice(1) : token;
-    if (trimmed.startsWith(sectionMarker)) {
-      current = parseSectionHeader(trimmed);
-      if (current !== undefined) sections.push(current);
-      index += 1;
-      continue;
-    }
-    if (!trimmed.startsWith(":")) {
-      index += 1;
-      continue;
-    }
-    const parsed = parseStepAt(fields, index, trimmed);
-    if (current !== undefined && parsed.step !== undefined)
-      current.steps.push(parsed.step);
-    index = parsed.nextIndex;
-  }
-  return sections;
 }
 
 async function matchesBaseFingerprint(
@@ -181,88 +89,147 @@ async function matchesBaseFingerprint(
   };
 }
 
-async function applyOneStep(
+async function applyAddedEntry(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
-  parentSet: ReadonlySet<string>,
-  nextSet: Set<string>,
-  step: LogStep,
+  parent: CommitAncestry,
+  next: CommitAncestry,
+  entry: DiffEntry,
   allowedAffects: ReadonlySet<string>,
   fingerprints: ReadonlySet<string>,
 ): Promise<GitResult<undefined>> {
-  if (step.kind === "delete") {
-    nextSet.delete(step.path);
+  if (!isPlainGitFileMode(entry.mode) || entry.blob === "")
+    return { ok: true, value: undefined };
+  if (parent.blobs.has(entry.blob)) {
+    next.paths.add(entry.path);
+    next.blobs.add(entry.blob);
     return { ok: true, value: undefined };
   }
-  if (step.kind === "rename") {
-    if (parentSet.has(step.oldPath)) {
-      nextSet.delete(step.oldPath);
-      nextSet.add(step.newPath);
-    }
-    return { ok: true, value: undefined };
-  }
-  if (step.kind === "copy") {
-    if (parentSet.has(step.oldPath)) nextSet.add(step.newPath);
-    return { ok: true, value: undefined };
-  }
-  if (
-    !step.path.endsWith(".json") ||
-    !isPlainGitFileMode(step.mode) ||
-    step.blob === ""
-  )
-    return { ok: true, value: undefined };
+  if (!entry.path.endsWith(".json")) return { ok: true, value: undefined };
   const matched = await matchesBaseFingerprint(
     programs,
     parsePath,
     root,
-    step.path,
-    step.blob,
+    entry.path,
+    entry.blob,
     allowedAffects,
     fingerprints,
   );
   if (!matched.ok) return matched;
-  if (matched.value) nextSet.add(step.path);
+  if (matched.value) {
+    next.paths.add(entry.path);
+    next.blobs.add(entry.blob);
+  }
   return { ok: true, value: undefined };
 }
 
-async function applySectionSteps(
+async function applyDiffEntry(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
-  parentSet: ReadonlySet<string>,
-  steps: readonly LogStep[],
+  parent: CommitAncestry,
+  next: CommitAncestry,
+  entry: DiffEntry,
   allowedAffects: ReadonlySet<string>,
   fingerprints: ReadonlySet<string>,
-): Promise<GitResult<Set<string>>> {
-  const nextSet = new Set(parentSet);
-  for (const step of steps) {
-    const applied = await applyOneStep(
+): Promise<GitResult<undefined>> {
+  if (entry.status === "D") {
+    next.paths.delete(entry.path);
+    return { ok: true, value: undefined };
+  }
+  if (entry.status.startsWith("R")) {
+    if (entry.oldPath !== undefined && parent.paths.has(entry.oldPath)) {
+      next.paths.delete(entry.oldPath);
+      next.paths.add(entry.path);
+      if (entry.blob !== "") next.blobs.add(entry.blob);
+    }
+    return { ok: true, value: undefined };
+  }
+  if (entry.status === "M") {
+    if (parent.paths.has(entry.path) && entry.blob !== "")
+      next.blobs.add(entry.blob);
+    return { ok: true, value: undefined };
+  }
+  if (entry.status !== "A") return { ok: true, value: undefined };
+  return applyAddedEntry(
+    programs,
+    parsePath,
+    root,
+    parent,
+    next,
+    entry,
+    allowedAffects,
+    fingerprints,
+  );
+}
+
+function mergeCommitAncestry(
+  ancestryByCommit: Map<string, CommitAncestry>,
+  commit: string,
+  next: CommitAncestry,
+): void {
+  const existing = ancestryByCommit.get(commit);
+  if (existing === undefined) {
+    ancestryByCommit.set(commit, next);
+    return;
+  }
+  for (const path of next.paths) existing.paths.add(path);
+  for (const blob of next.blobs) existing.blobs.add(blob);
+}
+
+function parseRevListParents(
+  output: string,
+): readonly { readonly commit: string; readonly parents: readonly string[] }[] {
+  const rows: {
+    readonly commit: string;
+    readonly parents: readonly string[];
+  }[] = [];
+  for (const line of output.split("\n")) {
+    const [commit = "", ...parents] = line
+      .trim()
+      .split(" ")
+      .filter((part) => part !== "");
+    if (commit !== "") rows.push({ commit, parents });
+  }
+  return rows;
+}
+
+async function applyParentEdge(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
+  parentOid: string,
+  commitOid: string,
+  parentState: CommitAncestry,
+  allowedAffects: ReadonlySet<string>,
+  fingerprints: ReadonlySet<string>,
+): Promise<GitResult<CommitAncestry>> {
+  const diff = await diffResolvedRange(
+    programs,
+    parsePath,
+    root,
+    `${parentOid}..${commitOid}`,
+  );
+  if (!diff.ok) return diff;
+  const next: CommitAncestry = {
+    paths: new Set(parentState.paths),
+    blobs: new Set(parentState.blobs),
+  };
+  for (const entry of diff.value) {
+    const applied = await applyDiffEntry(
       programs,
       parsePath,
       root,
-      parentSet,
-      nextSet,
-      step,
+      parentState,
+      next,
+      entry,
       allowedAffects,
       fingerprints,
     );
     if (!applied.ok) return applied;
   }
-  return { ok: true, value: nextSet };
-}
-
-function mergeCommitAncestry(
-  ancestryByCommit: Map<string, Set<string>>,
-  commit: string,
-  nextSet: Set<string>,
-): void {
-  const existing = ancestryByCommit.get(commit);
-  if (existing === undefined) {
-    ancestryByCommit.set(commit, nextSet);
-    return;
-  }
-  for (const path of nextSet) existing.add(path);
+  return { ok: true, value: next };
 }
 
 async function trackAncestryGraph(
@@ -273,52 +240,41 @@ async function trackAncestryGraph(
   toOid: string,
   allowedAffects: ReadonlySet<string>,
   fingerprints: ReadonlySet<string>,
-  basePaths: ReadonlySet<string>,
+  baseState: CommitAncestry,
 ): Promise<GitResult<ReadonlySet<string>>> {
-  if (basePaths.size === 0 || fromOid === toOid)
-    return { ok: true, value: basePaths };
-  const log = await runReadOnlyGit(programs, parsePath, root, "log", [
-    "-m",
+  if (baseState.paths.size === 0 || fromOid === toOid)
+    return { ok: true, value: baseState.paths };
+  const listed = await runReadOnlyGit(programs, parsePath, root, "rev-list", [
     "--topo-order",
     "--reverse",
-    "--raw",
-    "--no-abbrev",
-    "--find-renames",
-    "--find-copies-harder",
-    "-C100%",
-    "--ignore-submodules=none",
-    "--no-ext-diff",
-    "--no-textconv",
-    "--no-relative",
-    "-z",
-    "--format=%x01%H %P",
+    "--parents",
     `${fromOid}..${toOid}`,
   ]);
-  if (!log.ok) return log;
-  const ancestryByCommit = new Map<string, Set<string>>([
-    [fromOid, new Set(basePaths)],
+  if (!listed.ok) return listed;
+  const ancestryByCommit = new Map<string, CommitAncestry>([
+    [fromOid, baseState],
   ]);
-  const parentCursors = new Map<string, number>();
-  for (const section of parseLogSections(log.value)) {
-    const cursor = parentCursors.get(section.commit) ?? 0;
-    parentCursors.set(section.commit, cursor + 1);
-    const parentOid = section.parents[cursor];
-    const parentSet =
-      (parentOid !== undefined ? ancestryByCommit.get(parentOid) : undefined) ??
-      basePaths;
-    const next = await applySectionSteps(
-      programs,
-      parsePath,
-      root,
-      parentSet,
-      section.steps,
-      allowedAffects,
-      fingerprints,
-    );
-    if (!next.ok) return next;
-    mergeCommitAncestry(ancestryByCommit, section.commit, next.value);
+  for (const { commit, parents } of parseRevListParents(listed.value)) {
+    for (const parentOid of parents) {
+      const parentState = ancestryByCommit.get(parentOid) ?? baseState;
+      const next = await applyParentEdge(
+        programs,
+        parsePath,
+        root,
+        parentOid,
+        commit,
+        parentState,
+        allowedAffects,
+        fingerprints,
+      );
+      if (!next.ok) return next;
+      mergeCommitAncestry(ancestryByCommit, commit, next.value);
+    }
   }
-  return { ok: true, value: ancestryByCommit.get(toOid) ?? basePaths };
+  return {
+    ok: true,
+    value: ancestryByCommit.get(toOid)?.paths ?? baseState.paths,
+  };
 }
 
 async function readTreeNoteHistory(
@@ -331,6 +287,7 @@ async function readTreeNoteHistory(
 ): Promise<GitResult<BaseNoteHistory>> {
   const fingerprints = new Set<string>();
   const basePaths = new Set<string>();
+  const baseBlobs = new Set<string>();
   const headScan = await collectFolderNotes(
     programs,
     parsePath,
@@ -340,6 +297,7 @@ async function readTreeNoteHistory(
     settings.changeNotes.affects,
     fingerprints,
     basePaths,
+    baseBlobs,
   );
   if (!headScan.ok) return headScan;
   const priorSettings = await readCommittedGateSettings(
@@ -372,6 +330,7 @@ async function readTreeNoteHistory(
         priorSettings.settings.changeNotes.affects,
         fingerprints,
         basePaths,
+        baseBlobs,
       );
       if (!priorScan.ok) return priorScan;
     }
@@ -384,7 +343,7 @@ async function readTreeNoteHistory(
     headOid,
     combinedAffects,
     fingerprints,
-    basePaths,
+    { paths: basePaths, blobs: baseBlobs },
   );
   if (!ancestorPaths.ok) return ancestorPaths;
   return {

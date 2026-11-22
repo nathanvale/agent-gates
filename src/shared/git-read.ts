@@ -18,9 +18,9 @@ type GitReadCommand =
   | "ls-tree"
   | "rev-parse"
   | "merge-base"
-  | "log";
+  | "rev-list";
 
-type DiffEntry = {
+export type DiffEntry = {
   readonly mode: string;
   readonly blob: string;
   readonly status: string;
@@ -239,6 +239,27 @@ export async function resolveCommitOid(
   return { ok: true, value: oid };
 }
 
+export async function diffResolvedRange(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
+  range: string,
+): Promise<GitResult<readonly DiffEntry[]>> {
+  const ran = await runReadOnlyGit(programs, parsePath, root, "diff", [
+    "--raw",
+    "--no-abbrev",
+    "--find-renames",
+    "--ignore-submodules=none",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-relative",
+    "-z",
+    range,
+  ]);
+  if (!ran.ok) return ran;
+  return parseDiffEntries(ran.value, range);
+}
+
 export async function diffBaseToHead(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
@@ -253,20 +274,12 @@ export async function diffBaseToHead(
 > {
   const baseOid = await resolveCommitOid(programs, parsePath, root, base);
   if (!baseOid.ok) return baseOid;
-  const range = `${baseOid.value}...${headOid}`;
-  const ran = await runReadOnlyGit(programs, parsePath, root, "diff", [
-    "--raw",
-    "--no-abbrev",
-    "--find-renames",
-    "--ignore-submodules=none",
-    "--no-ext-diff",
-    "--no-textconv",
-    "--no-relative",
-    "-z",
-    range,
-  ]);
-  if (!ran.ok) return ran;
-  const entries = parseDiffEntries(ran.value, range);
+  const entries = await diffResolvedRange(
+    programs,
+    parsePath,
+    root,
+    `${baseOid.value}...${headOid}`,
+  );
   if (!entries.ok) return entries;
   return {
     ok: true,
