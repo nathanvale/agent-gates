@@ -15,7 +15,7 @@ const noteFilePattern =
 
 export const changeNoteKinds = kinds;
 
-type ChangeNote = {
+export type ChangeNote = {
   readonly kind: "added" | "changed" | "fixed" | "removed" | "none";
   readonly breaking: boolean;
   readonly affects: readonly string[];
@@ -41,7 +41,7 @@ function fail(problem: string): {
   return { ok: false, problem };
 }
 
-function compareText(left: string, right: string): number {
+export function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 

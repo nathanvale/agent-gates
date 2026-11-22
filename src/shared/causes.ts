@@ -29,6 +29,8 @@ export const causes = {
   DOMAIN_GATES_SETTINGS_INVALID: refusedNext,
   DOMAIN_GATES_NOTE_INVALID: refusedNext,
   DOMAIN_GATES_NOTE_MISSING: refusedNext,
+  DOMAIN_GATES_VERSION_INVALID: refusedNext,
+  DOMAIN_GATES_NOTHING_TO_PREPARE: refusedNext,
   DOMAIN_GATES_FILE_EXISTS: refusedNext,
   DOMAIN_GATES_GIT_FAILED: refusedNext,
   DOMAIN_GATES_CHANGE_HELD: refusedHandoff,

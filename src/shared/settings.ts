@@ -15,7 +15,7 @@ const changeNotesKeys = new Set<string>([
 ]);
 const versionsKeys = new Set<string>(["folder", "heading"]);
 
-type VersionSettings = {
+export type VersionSettings = {
   readonly folder: string;
   readonly heading: string;
 };

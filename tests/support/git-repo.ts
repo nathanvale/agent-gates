@@ -1,5 +1,5 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { testFolder } from "./test-folder.ts";
 
 const cliPath = join(import.meta.dir, "../../src/cli.ts");
@@ -125,6 +125,55 @@ const defaultSettingsJson = `${JSON.stringify(
 
 export function envelopeMessage(envelope: unknown): string {
   return String(Reflect.get(Object(envelope), "message"));
+}
+
+export function envelopeData(envelope: unknown): Record<string, unknown> {
+  const result: unknown = Reflect.get(Object(envelope), "result");
+  const data: unknown = Reflect.get(Object(result), "data");
+  if (typeof data !== "object" || data === null)
+    throw new Error("Expected non-null result.data in JSON envelope.");
+  return Object.fromEntries(Object.entries(data));
+}
+
+export function makeVersionRepo(
+  sandbox: ReturnType<typeof createSandboxTracker>,
+  initialNotes: Readonly<Record<string, string>> = {},
+): { readonly repo: string; readonly stateDir: string } {
+  const base = sandbox.folder("gates-version-");
+  const repo = join(base, "repo");
+  const stateDir = join(base, "state");
+  initGitRepo(repo);
+  commitFiles(repo, "init", {
+    "agent-gates.json": defaultSettingsJson,
+    "change-notes/README.md": "# Change notes\n",
+    ...initialNotes,
+  });
+  return { repo, stateDir };
+}
+
+export function makeGitRecorderStub(stubFolder: string): {
+  readonly pathEnv: string;
+  readonly logFile: string;
+} {
+  const realGit = Bun.which("git");
+  if (realGit === null) throw new Error("git binary not found on PATH.");
+  const binDir = join(stubFolder, "bin");
+  const logFile = join(stubFolder, "git-calls.log");
+  writeTreeFile(
+    binDir,
+    "git",
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' "$*" >> ${JSON.stringify(logFile)}`,
+      `exec ${JSON.stringify(realGit)} "$@"`,
+      "",
+    ].join("\n"),
+  );
+  chmodSync(join(binDir, "git"), 0o755);
+  return {
+    pathEnv: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+    logFile,
+  };
 }
 
 export function makeConfiguredRepo(
