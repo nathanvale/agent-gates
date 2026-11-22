@@ -242,7 +242,7 @@ export function confirmFileContent(
   const targetPath = join(root, folder, fileName);
   const descriptor = openSync(
     targetPath,
-    constants.O_RDONLY | constants.O_NOFOLLOW,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
   );
   try {
     const opened = fstatSync(descriptor, { bigint: true });

@@ -224,4 +224,59 @@ describe("Per-commit ancestry tracking (copy-then-edit, merged renames, destinat
       result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
     });
   });
+
+  test("P1 (r8): edit ancestral note then rename+minify, and same-commit edit+reformatted copy both fail R8", () => {
+    const { repo, stateDir } = makeBaseRepo();
+    git(repo, "checkout", "-b", "edit-then-rename-minify");
+    const editedPayload = {
+      kind: "fixed",
+      breaking: false,
+      affects: ["cli"],
+      summary: "Edited ancestral summary before minifying.",
+      action: null,
+    };
+    commitFiles(repo, "edit existing note summary", {
+      "change-notes/2026-11-20-old.json": `${JSON.stringify(editedPayload, null, 2)}\n`,
+    });
+    git(
+      repo,
+      "mv",
+      "change-notes/2026-11-20-old.json",
+      "change-notes/2026-11-22-edited-minified.json",
+    );
+    writeTreeFile(
+      repo,
+      "change-notes/2026-11-22-edited-minified.json",
+      JSON.stringify(editedPayload),
+    );
+    writeTreeFile(repo, "src/app.ts", "export const v = 2;\n");
+    git(
+      repo,
+      "add",
+      "change-notes/2026-11-22-edited-minified.json",
+      "src/app.ts",
+    );
+    git(repo, "commit", "-q", "-m", "rename and minify edited note");
+
+    const afterEditRename = checkMain(repo, stateDir);
+    expect(afterEditRename.exitCode).toBe(3);
+    expect(afterEditRename.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
+    });
+
+    git(repo, "checkout", "main");
+    git(repo, "checkout", "-b", "same-commit-edit-and-copy");
+    commitFiles(repo, "edit old note and copy reformatted in same commit", {
+      "change-notes/2026-11-20-old.json": `${JSON.stringify(editedPayload, null, 2)}\n`,
+      "change-notes/2026-11-22-same-commit-copy.json":
+        JSON.stringify(editedPayload),
+      "src/app.ts": "export const v = 3;\n",
+    });
+
+    const afterSameCommit = checkMain(repo, stateDir);
+    expect(afterSameCommit.exitCode).toBe(3);
+    expect(afterSameCommit.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
+    });
+  });
 });

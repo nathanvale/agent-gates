@@ -68,7 +68,7 @@ function gitBlobHash(algorithm: "sha1" | "sha256", bytes: Buffer): string {
     .digest("hex");
 }
 
-function hasInvalidUtf8Decoding(blobOid: string, text: string): boolean {
+export function hasInvalidUtf8Decoding(blobOid: string, text: string): boolean {
   if (!text.includes(replacementCharacter)) return false;
   const algorithm = blobOid.length === 64 ? "sha256" : "sha1";
   const encoded = Buffer.from(text, "utf8");
