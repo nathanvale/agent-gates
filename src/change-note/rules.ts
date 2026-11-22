@@ -101,7 +101,7 @@ function parseJsonObject(file: string, raw: string): Parsed<object> {
 function readJsonFields(
   file: string,
   raw: string,
-  allowedAffects: ReadonlySet<string>,
+  allowedAffects?: ReadonlySet<string>,
 ): Parsed<Map<string, unknown>> {
   const objectResult = parseJsonObject(file, raw);
   if (!objectResult.ok) return objectResult;
@@ -113,7 +113,9 @@ function readJsonFields(
     );
   const missing = fieldsList.find((key) => !fields.has(key));
   if (missing === "affects") {
-    const allowedList = [...allowedAffects].sort(compareText).join(", ");
+    const allowedList = [...(allowedAffects ?? [])]
+      .sort(compareText)
+      .join(", ");
     return fail(
       `${file}: missing required field "affects". Repair: add "affects" using one or more of ${allowedList} (or [] when kind is "none").`,
     );
@@ -159,9 +161,9 @@ function parseAffects(
   file: string,
   raw: unknown,
   kind: ChangeNoteKind,
-  allowedAffects: ReadonlySet<string>,
+  allowedAffects?: ReadonlySet<string>,
 ): Parsed<readonly string[]> {
-  const allowedList = [...allowedAffects].sort(compareText).join(", ");
+  const allowedList = [...(allowedAffects ?? [])].sort(compareText).join(", ");
   if (!Array.isArray(raw))
     return fail(
       `${file}: affects must be an array of lowercase words. Repair: use one or more of ${allowedList} (or [] when kind is "none").`,
@@ -174,11 +176,13 @@ function parseAffects(
       );
     affects.push(item);
   }
-  const invalid = affects.find((item) => !allowedAffects.has(item));
-  if (invalid !== undefined)
-    return fail(
-      `${file}: unknown affects entry "${invalid}". Repair: use one of ${allowedList}.`,
-    );
+  if (allowedAffects !== undefined) {
+    const invalid = affects.find((item) => !allowedAffects.has(item));
+    if (invalid !== undefined)
+      return fail(
+        `${file}: unknown affects entry "${invalid}". Repair: use one of ${allowedList}.`,
+      );
+  }
   if (kind !== "none" && affects.length === 0)
     return fail(
       `${file}: affects must name at least one word when kind is "${kind}". Repair: use one or more of ${allowedList}.`,
@@ -202,10 +206,10 @@ function parseAction(
   return { ok: true, value: raw === null ? null : raw.trim() };
 }
 
-export function parseChangeNote(
+function parseChangeNoteFields(
   file: string,
   raw: string,
-  allowedAffects: ReadonlySet<string>,
+  allowedAffects?: ReadonlySet<string>,
 ):
   | { readonly ok: true; readonly note: ChangeNote }
   | { readonly ok: false; readonly problem: string } {
@@ -241,6 +245,16 @@ export function parseChangeNote(
   };
 }
 
+export function parseChangeNote(
+  file: string,
+  raw: string,
+  allowedAffects: ReadonlySet<string>,
+):
+  | { readonly ok: true; readonly note: ChangeNote }
+  | { readonly ok: false; readonly problem: string } {
+  return parseChangeNoteFields(file, raw, allowedAffects);
+}
+
 export function canonicalChangeNoteKey(note: ChangeNote): string {
   return JSON.stringify({
     kind: note.kind,
@@ -249,6 +263,13 @@ export function canonicalChangeNoteKey(note: ChangeNote): string {
     summary: note.summary,
     action: note.action,
   });
+}
+
+export function canonicalChangeNoteFingerprint(
+  raw: string,
+): string | undefined {
+  const parsed = parseChangeNoteFields("note", raw);
+  return parsed.ok ? canonicalChangeNoteKey(parsed.note) : undefined;
 }
 
 export function formatChangeNoteJson(note: ChangeNote): string {
