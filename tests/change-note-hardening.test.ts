@@ -174,8 +174,8 @@ describe("PR 1 hardening and catch tests (P0-1, P1-1..P1-5)", () => {
     const p1 = spawnAdd("First concurrent note.");
     const p2 = spawnAdd("Second concurrent note.");
     const timer = setTimeout(() => {
-      p1.kill();
-      p2.kill();
+      p1.kill("SIGKILL");
+      p2.kill("SIGKILL");
     }, 20_000);
     let code1: number;
     let code2: number;
@@ -190,8 +190,14 @@ describe("PR 1 hardening and catch tests (P0-1, P1-1..P1-5)", () => {
       ]);
     } finally {
       clearTimeout(timer);
-      if (p1.exitCode === null) p1.kill();
-      if (p2.exitCode === null) p2.kill();
+      if (p1.exitCode === null) {
+        p1.kill("SIGKILL");
+        await p1.exited;
+      }
+      if (p2.exitCode === null) {
+        p2.kill("SIGKILL");
+        await p2.exited;
+      }
     }
     const codes = [code1, code2].sort((a, b) => a - b);
     expect(codes).toEqual([0, 3]);

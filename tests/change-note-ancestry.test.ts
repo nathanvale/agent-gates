@@ -152,4 +152,76 @@ describe("Per-commit ancestry tracking (copy-then-edit, merged renames, destinat
     const checked = checkMain(repo, stateDir);
     expect(checked.exitCode).toBe(0);
   });
+
+  test("P1-1 (r7): --no-ff merge whose tree equals the side parent still preserves rename ancestry", () => {
+    const { repo, stateDir } = makeBaseRepo();
+    git(repo, "checkout", "-b", "side-only");
+    git(
+      repo,
+      "mv",
+      "change-notes/2026-11-20-old.json",
+      "change-notes/2026-11-22-side-disguise.json",
+    );
+    git(repo, "commit", "-q", "-m", "side rename");
+    commitFiles(repo, "side minify, edit summary, edit src", {
+      "change-notes/2026-11-22-side-disguise.json": JSON.stringify({
+        kind: "fixed",
+        breaking: false,
+        affects: ["cli"],
+        summary: "Earlier base fix with full pretty-printed formatting!",
+        action: null,
+      }),
+      "src/app.ts": "export const v = 2;\n",
+    });
+
+    git(repo, "checkout", "main");
+    git(repo, "checkout", "-b", "empty-side-diff-merge");
+    git(repo, "merge", "-q", "--no-ff", "side-only", "-m", "merge side-only");
+
+    const checked = checkMain(repo, stateDir);
+    expect(checked.exitCode).toBe(3);
+    expect(checked.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
+    });
+  });
+
+  test("P1-2 (r7): partial rename with edit in commit 1 then minify in commit 2 still fails R8", () => {
+    const { repo, stateDir } = makeBaseRepo();
+    git(repo, "checkout", "-b", "partial-rename");
+    git(
+      repo,
+      "mv",
+      "change-notes/2026-11-20-old.json",
+      "change-notes/2026-11-22-partial.json",
+    );
+    commitFiles(repo, "partial rename with minor summary tweak", {
+      "change-notes/2026-11-22-partial.json": `${JSON.stringify(
+        {
+          kind: "fixed",
+          breaking: false,
+          affects: ["cli"],
+          summary: "Earlier base fix with updated pretty-printed formatting.",
+          action: null,
+        },
+        null,
+        2,
+      )}\n`,
+    });
+    commitFiles(repo, "minify renamed note and edit shipped code", {
+      "change-notes/2026-11-22-partial.json": JSON.stringify({
+        kind: "fixed",
+        breaking: false,
+        affects: ["cli"],
+        summary: "Earlier base fix with updated pretty-printed formatting!",
+        action: null,
+      }),
+      "src/app.ts": "export const v = 2;\n",
+    });
+
+    const checked = checkMain(repo, stateDir);
+    expect(checked.exitCode).toBe(3);
+    expect(checked.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
+    });
+  });
 });

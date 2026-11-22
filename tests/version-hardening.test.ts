@@ -44,7 +44,7 @@ async function spawnGatesAsync(
     stderr: "pipe",
   });
   const timer = setTimeout(() => {
-    child.kill();
+    child.kill("SIGKILL");
   }, 20_000);
   try {
     const [exitCode, stdout, stderr] = await Promise.all([
@@ -59,7 +59,10 @@ async function spawnGatesAsync(
     return { exitCode, stdout, stderr, envelope };
   } finally {
     clearTimeout(timer);
-    if (child.exitCode === null) child.kill();
+    if (child.exitCode === null) {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
   }
 }
 

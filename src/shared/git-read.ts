@@ -19,9 +19,9 @@ type GitReadCommand =
   | "ls-tree"
   | "rev-parse"
   | "merge-base"
-  | "log";
+  | "rev-list";
 
-type DiffEntry = {
+export type DiffEntry = {
   readonly mode: string;
   readonly blob: string;
   readonly status: string;
@@ -263,7 +263,6 @@ export async function diffResolvedRange(
   if (!ran.ok) return ran;
   return parseDiffEntries(ran.value, range);
 }
-
 export async function diffBaseToHead(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
