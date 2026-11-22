@@ -131,6 +131,70 @@ async function candidatesAtCommit(
   return { ok: true, candidates };
 }
 
+type NoteCandidateSet = {
+  readonly candidates: readonly BlobCandidate[];
+  readonly priorFingerprints: ReadonlySet<string> | undefined;
+};
+
+type NoteCandidateResult =
+  | { readonly ok: true; readonly value: NoteCandidateSet }
+  | {
+      readonly ok: false;
+      readonly kind: "invalid" | "git";
+      readonly problem: string;
+    };
+
+async function candidatesSinceTag(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
+  settings: GateSettings,
+  previousTag: string,
+  headOid: string,
+): Promise<NoteCandidateResult> {
+  const notesFolder = settings.changeNotes.folder;
+  const tagOid = await resolveCommitOid(
+    programs,
+    parsePath,
+    root,
+    `refs/tags/${previousTag}`,
+  );
+  if (!tagOid.ok) return { ok: false, kind: "git", problem: tagOid.problem };
+  const diff = await diffResolvedRange(
+    programs,
+    parsePath,
+    root,
+    `${tagOid.value}..${headOid}`,
+    notesFolder,
+  );
+  if (!diff.ok) return { ok: false, kind: "git", problem: diff.problem };
+  const candidates = diff.value
+    .filter((entry) => isNewlyAddedNote(notesFolder, entry))
+    .map(({ mode, blob, path, invalidUtf8Path }) => ({
+      mode,
+      blob,
+      path,
+      invalidUtf8Path,
+    }));
+  if (candidates.length === 0)
+    return {
+      ok: true,
+      value: { candidates, priorFingerprints: undefined },
+    };
+  const prior = await readTreeNoteFingerprints(
+    programs,
+    parsePath,
+    root,
+    tagOid.value,
+    settings,
+  );
+  if (!prior.ok) return { ok: false, kind: "git", problem: prior.problem };
+  return {
+    ok: true,
+    value: { candidates, priorFingerprints: prior.value },
+  };
+}
+
 export async function readChangeNotesSinceTag(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
@@ -146,55 +210,36 @@ export async function readChangeNotesSinceTag(
       readonly problem: string;
     }
 > {
-  const notesFolder = settings.changeNotes.folder;
-  let candidates: readonly BlobCandidate[];
-  let priorFingerprints: ReadonlySet<string> | undefined;
-  if (previousTag === undefined) {
-    const atHead = await candidatesAtCommit(
-      programs,
-      parsePath,
-      root,
-      headOid,
-      notesFolder,
-    );
-    if (!atHead.ok) return atHead;
-    candidates = atHead.candidates;
-  } else {
-    const tagOid = await resolveCommitOid(
-      programs,
-      parsePath,
-      root,
-      `refs/tags/${previousTag}`,
-    );
-    if (!tagOid.ok) return { ok: false, kind: "git", problem: tagOid.problem };
-    const diff = await diffResolvedRange(
-      programs,
-      parsePath,
-      root,
-      `${tagOid.value}..${headOid}`,
-      notesFolder,
-    );
-    if (!diff.ok) return { ok: false, kind: "git", problem: diff.problem };
-    candidates = diff.value
-      .filter((entry) => isNewlyAddedNote(notesFolder, entry))
-      .map(({ mode, blob, path, invalidUtf8Path }) => ({
-        mode,
-        blob,
-        path,
-        invalidUtf8Path,
-      }));
-    if (candidates.length > 0) {
-      const prior = await readTreeNoteFingerprints(
-        programs,
-        parsePath,
-        root,
-        tagOid.value,
-        settings,
-      );
-      if (!prior.ok) return { ok: false, kind: "git", problem: prior.problem };
-      priorFingerprints = prior.value;
-    }
-  }
+  const collected =
+    previousTag === undefined
+      ? await candidatesAtCommit(
+          programs,
+          parsePath,
+          root,
+          headOid,
+          settings.changeNotes.folder,
+        ).then(
+          (result): NoteCandidateResult =>
+            result.ok
+              ? {
+                  ok: true,
+                  value: {
+                    candidates: result.candidates,
+                    priorFingerprints: undefined,
+                  },
+                }
+              : result,
+        )
+      : await candidatesSinceTag(
+          programs,
+          parsePath,
+          root,
+          settings,
+          previousTag,
+          headOid,
+        );
+  if (!collected.ok) return collected;
+  const { candidates, priorFingerprints } = collected.value;
   const entries: ChangeNoteEntry[] = [];
   for (const candidate of candidates) {
     const validated = await validateCommittedNote(

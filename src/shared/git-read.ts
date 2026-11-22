@@ -46,7 +46,20 @@ const gitOutputLimitBytes = 4 * 1024 * 1024;
 const replacementCharacter = "\uFFFD";
 const commitOidPattern = /^[0-9a-f]{40,64}$/;
 
-export function isPlainGitFileMode(mode: string): boolean {
+const clearedGitEnvNames = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+] as const;
+
+function isPlainGitFileMode(mode: string): boolean {
   return mode === "100644" || mode === "100755";
 }
 
@@ -67,26 +80,7 @@ function isolatedGitArgs(
   args: readonly string[],
 ): readonly string[] {
   return [
-    "-u",
-    "GIT_DIR",
-    "-u",
-    "GIT_WORK_TREE",
-    "-u",
-    "GIT_INDEX_FILE",
-    "-u",
-    "GIT_OBJECT_DIRECTORY",
-    "-u",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "-u",
-    "GIT_COMMON_DIR",
-    "-u",
-    "GIT_CONFIG_COUNT",
-    "-u",
-    "GIT_CONFIG_PARAMETERS",
-    "-u",
-    "GIT_CONFIG_GLOBAL",
-    "-u",
-    "GIT_CONFIG_SYSTEM",
+    ...clearedGitEnvNames.flatMap((name) => ["-u", name]),
     "GIT_OPTIONAL_LOCKS=0",
     "GIT_NO_LAZY_FETCH=1",
     "GIT_TERMINAL_PROMPT=0",
@@ -161,31 +155,10 @@ function parseOneDiffRecord(
       ok: false,
       problem: `git diff ${range} returned an incomplete record.`,
     };
-  if (status.startsWith("R") || status.startsWith("C")) {
-    const oldPath = fields[index + 1];
-    const newPath = fields[index + 2];
-    if (oldPath === undefined || newPath === undefined)
-      return {
-        ok: false,
-        problem: `git diff ${range} returned an incomplete rename record.`,
-      };
-    return {
-      ok: true,
-      value: {
-        entry: {
-          mode,
-          blob,
-          status,
-          oldPath,
-          path: newPath,
-          invalidUtf8Path: newPath.includes(replacementCharacter),
-        },
-        nextIndex: index + 3,
-      },
-    };
-  }
-  const rawPath = fields[index + 1];
-  if (rawPath === undefined)
+  const isPair = status.startsWith("R") || status.startsWith("C");
+  const oldPath = isPair ? fields[index + 1] : undefined;
+  const path = isPair ? fields[index + 2] : fields[index + 1];
+  if ((isPair && oldPath === undefined) || path === undefined)
     return {
       ok: false,
       problem: `git diff ${range} returned an incomplete record.`,
@@ -197,11 +170,11 @@ function parseOneDiffRecord(
         mode,
         blob,
         status,
-        oldPath: undefined,
-        path: rawPath,
-        invalidUtf8Path: rawPath.includes(replacementCharacter),
+        oldPath,
+        path,
+        invalidUtf8Path: path.includes(replacementCharacter),
       },
-      nextIndex: index + 2,
+      nextIndex: index + (isPair ? 3 : 2),
     },
   };
 }
@@ -293,7 +266,10 @@ export async function diffBaseToHead(
     `${baseOid.value}...${headOid}`,
   );
   if (!entries.ok) return entries;
-  return { ok: true, value: { baseOid: baseOid.value, entries: entries.value } };
+  return {
+    ok: true,
+    value: { baseOid: baseOid.value, entries: entries.value },
+  };
 }
 
 export async function readTreeNoteFingerprints(
@@ -322,10 +298,13 @@ export async function readTreeNoteFingerprints(
     if (!isNotePath(notesFolder, path)) continue;
     const [mode = "", type = "", blob = ""] = header.split(" ");
     if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "") continue;
-    const content = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
-      "blob",
-      blob,
-    ]);
+    const content = await runReadOnlyGit(
+      programs,
+      parsePath,
+      root,
+      "cat-file",
+      ["blob", blob],
+    );
     if (!content.ok) return content;
     const parsed = parseChangeNote(
       path,
