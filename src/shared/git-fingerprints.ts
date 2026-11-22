@@ -17,7 +17,7 @@ import {
 } from "./git-read.ts";
 import { GATE_SETTINGS_FILE, type GateSettings } from "./settings.ts";
 
-type BaseNoteHistory = {
+export type BaseNoteHistory = {
   readonly fingerprints: ReadonlySet<string>;
   readonly ancestorPaths: ReadonlySet<string>;
 };
@@ -291,18 +291,11 @@ function mergeCommitAncestry(
 }
 
 function parseRevListParents(output: string) {
-  const rows: {
-    readonly commit: string;
-    readonly parents: readonly string[];
-  }[] = [];
-  for (const line of output.split("\n")) {
-    const [commit = "", ...parents] = line
-      .trim()
-      .split(" ")
-      .filter((part) => part !== "");
-    if (commit !== "") rows.push({ commit, parents });
-  }
-  return rows;
+  return output
+    .split("\n")
+    .map((line) => line.trim().split(" ").filter(Boolean))
+    .filter((parts) => parts.length > 0)
+    .map(([commit = "", ...parents]) => ({ commit, parents }));
 }
 
 async function recordIntermediateSettingsFolder(
@@ -419,12 +412,15 @@ async function trackAncestryGraph(
   };
 }
 
-async function readTreeNoteHistory(
-  git: GitReader,
+export async function readTreeNoteHistory(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
   treeCommitOid: string,
   headOid: string,
   settings: GateSettings,
 ): Promise<GitResult<BaseNoteHistory>> {
+  const git: GitReader = { programs, parsePath, root };
   const baseState = cloneAncestry();
   const headScan = await collectFolderNotes(
     git,
@@ -491,7 +487,9 @@ export async function readBaseNoteHistory(
   );
   if (!mergeBase.ok) return mergeBase;
   return readTreeNoteHistory(
-    { programs, parsePath, root },
+    programs,
+    parsePath,
+    root,
     mergeBase.value.trim(),
     headOid,
     settings,

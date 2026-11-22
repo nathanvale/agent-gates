@@ -13,6 +13,8 @@ import {
   unchangedSuccess,
 } from "./shared/causes.ts";
 import { defaultStateFolder } from "./shared/settings.ts";
+import { versionPrepareCommand } from "./version/prepare.ts";
+import { versionPreviewCommand } from "./version/preview.ts";
 
 const status = command({
   identity: "agent-gates.status",
@@ -49,6 +51,8 @@ export function createAgentGates(
       status,
       changeNoteAddCommand(state),
       changeNoteCheckCommand(parsePath),
+      versionPreviewCommand(parsePath),
+      versionPrepareCommand(state, parsePath),
       pendingCommand(state),
     ],
     causes,
