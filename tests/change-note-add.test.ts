@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import {
   createSandboxTracker,
@@ -253,6 +253,7 @@ describe("agent-gates change-note add (R1-R7, R16, R19, R23, R25)", () => {
       ["--affects", "Bootstrap"],
       ["--affects", "cli_x"],
       ["--affects", "unknown"],
+      ["--affects", ""],
       [],
     ]) {
       const res = runGatesCli(
@@ -283,5 +284,40 @@ describe("agent-gates change-note add (R1-R7, R16, R19, R23, R25)", () => {
       const repair = msg.split("Repair:")[1] ?? "";
       expect(repair.toLowerCase()).not.toContain("bootstrap");
     }
+
+    const outside = sandbox.folder("outside-notes-");
+    const linkRepo = makeCustomRepo(sandbox, {
+      changeNotes: {
+        folder: "link/notes",
+        shippedFolders: ["src"],
+        affects: ["cli"],
+      },
+    });
+    symlinkSync(outside, join(linkRepo.repo, "link"));
+    const escaped = runGatesCli(
+      [
+        "change-note",
+        "add",
+        "--slug",
+        "escaped",
+        "--kind",
+        "added",
+        "--affects",
+        "cli",
+        "--summary",
+        "Must not escape through symlink ancestor.",
+        "--date",
+        "2026-11-22",
+        "--repository",
+        linkRepo.repo,
+        "--json",
+      ],
+      { cwd: linkRepo.repo, stateDir: linkRepo.stateDir },
+    );
+    expect(escaped.exitCode).toBe(3);
+    expect(escaped.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_FILE_EXISTS" },
+    });
+    expect(existsSync(join(outside, "notes"))).toBe(false);
   });
 });

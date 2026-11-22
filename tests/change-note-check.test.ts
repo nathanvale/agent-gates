@@ -251,6 +251,23 @@ describe("agent-gates change-note check and pending (R1-R9, R16-R19, R23)", () =
       result: { causeCode: "DOMAIN_GATES_GIT_FAILED" },
     });
 
+    const injectedBase = runGatesCli(
+      [
+        "change-note",
+        "check",
+        "--base",
+        "--relative=",
+        "--repository",
+        repo,
+        "--json",
+      ],
+      { cwd: repo, stateDir },
+    );
+    expect(injectedBase.exitCode).toBe(3);
+    expect(injectedBase.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_GIT_FAILED" },
+    });
+
     const unknownFlag = runGatesCli(["change-note", "check", "--unknown"], {
       cwd: repo,
       stateDir,

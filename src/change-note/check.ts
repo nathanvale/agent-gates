@@ -8,15 +8,16 @@ import {
   unchangedSuccess,
 } from "../shared/causes.ts";
 import {
-  diffRange,
+  diffBaseToHead,
   isNewlyAddedNote,
   isNotePath,
+  readCommittedGateSettings,
   validateCommittedNote,
 } from "../shared/git-read.ts";
 import {
+  discoverRepositoryRoot,
   type GateSettings,
   isShippedPath,
-  resolveRepositoryAndSettings,
 } from "../shared/settings.ts";
 
 const identity = "agent-gates.change-note-check";
@@ -216,24 +217,41 @@ export function changeNoteCheckCommand(
       }),
     ],
     run: async (input, context) => {
-      const resolved = resolveRepositoryAndSettings(
+      const repoResult = discoverRepositoryRoot(
         input["--repository"],
         process.cwd(),
       );
-      if (!resolved.ok)
+      if (!repoResult.ok)
         return context.result(
-          { commandIdentity: identity, causeCode: resolved.causeCode },
-          { message: resolved.message, data: null, effects: nothingChanged },
+          {
+            commandIdentity: identity,
+            causeCode: "DOMAIN_GATES_REPOSITORY_NOT_FOUND",
+          },
+          { message: repoResult.problem, data: null, effects: nothingChanged },
         );
-      const settings = resolved.settings;
+      const settingsResult = await readCommittedGateSettings(
+        context.programs,
+        parsePath,
+        repoResult.root,
+      );
+      if (!settingsResult.ok)
+        return context.result(
+          { commandIdentity: identity, causeCode: settingsResult.causeCode },
+          {
+            message: settingsResult.message,
+            data: null,
+            effects: nothingChanged,
+          },
+        );
+      const settings = settingsResult.settings;
       const base = input["--base"] ?? "origin/main";
       const notesFolder = settings.changeNotes.folder;
 
-      const diff = await diffRange(
+      const diff = await diffBaseToHead(
         context.programs,
         parsePath,
-        resolved.root,
-        `${base}...HEAD`,
+        repoResult.root,
+        base,
       );
       if (!diff.ok)
         return context.result(
@@ -256,7 +274,7 @@ export function changeNoteCheckCommand(
       const validated = await validateBranchNotes(
         context.programs,
         parsePath,
-        resolved.root,
+        repoResult.root,
         settings,
         noteEntries,
       );
@@ -298,7 +316,7 @@ export function changeNoteCheckCommand(
         {
           message: `Change notes gate passed (${detail}).`,
           data: {
-            repository: resolved.root,
+            repository: repoResult.root,
             base,
             changedFileCount: entries.length,
             shippedFiles,

@@ -262,5 +262,22 @@ describe("User-story catch tests for change-note and root discovery (R1, R5, R8,
     expect(selfBlocked.envelope).toMatchObject({
       result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
     });
+
+    writeTreeFile(
+      selfRepo,
+      "agent-gates.json",
+      JSON.stringify({
+        changeNotes: {
+          folder: "change-notes",
+          shippedFolders: ["docs-only"],
+          affects: ["cli"],
+        },
+      }),
+    );
+    const stillBlocked = checkBase(selfRepo, stateDir);
+    expect(stillBlocked.exitCode).toBe(3);
+    expect(stillBlocked.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
+    });
   });
 });

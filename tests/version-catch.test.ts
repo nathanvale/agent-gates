@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import {
   commitFiles,
@@ -323,5 +323,78 @@ describe("User-story catch tests for versions (US 10-15, US 19, US 23, R9, R14, 
     expect(prepareHelp.stdout).not.toContain("--tag");
     expect(prepareHelp.stdout).not.toContain("--commit");
     expect(prepareHelp.stdout).not.toContain("--push");
+
+    const committedRepo = makeCustomRepo(sandbox, {
+      changeNotes: {
+        folder: "change-notes",
+        shippedFolders: ["src"],
+        affects: ["cli"],
+      },
+      versions: { folder: "versions", heading: "Committed heading" },
+    });
+    commitFiles(committedRepo.repo, "add note", {
+      "change-notes/2026-11-22-c.json": JSON.stringify({
+        kind: "added",
+        breaking: false,
+        affects: ["cli"],
+        summary: "Committed note.",
+        action: null,
+      }),
+    });
+    writeTreeFile(
+      committedRepo.repo,
+      "agent-gates.json",
+      JSON.stringify({
+        changeNotes: {
+          folder: "change-notes",
+          shippedFolders: ["src"],
+          affects: ["cli"],
+        },
+        versions: { folder: "versions", heading: "Uncommitted heading" },
+      }),
+    );
+    const previewCommitted = runVersion(
+      "preview",
+      committedRepo.repo,
+      committedRepo.stateDir,
+      "Uses committed settings.",
+      "2026-11-22",
+    );
+    expect(previewCommitted.exitCode).toBe(0);
+    expect(String(envelopeData(previewCommitted.envelope).text)).toContain(
+      "# Committed heading 0.1.0 (2026-11-22)",
+    );
+
+    const outsideVersions = sandbox.folder("outside-ver-");
+    const linkVerRepo = makeCustomRepo(sandbox, {
+      changeNotes: {
+        folder: "change-notes",
+        shippedFolders: ["src"],
+        affects: ["cli"],
+      },
+      versions: { folder: "link/versions", heading: "Repository version" },
+    });
+    commitFiles(linkVerRepo.repo, "add note", {
+      "change-notes/2026-11-22-v.json": JSON.stringify({
+        kind: "added",
+        breaking: false,
+        affects: ["cli"],
+        summary: "Note.",
+        action: null,
+      }),
+    });
+    symlinkSync(outsideVersions, join(linkVerRepo.repo, "link"));
+    const refusedLinkVer = runVersion(
+      "prepare",
+      linkVerRepo.repo,
+      linkVerRepo.stateDir,
+      "Must refuse symlink ancestor.",
+      "2026-11-22",
+    );
+    expect(refusedLinkVer.exitCode).toBe(3);
+    expect(refusedLinkVer.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_FILE_EXISTS" },
+    });
+    expect(existsSync(join(outsideVersions, "versions"))).toBe(false);
   });
 });

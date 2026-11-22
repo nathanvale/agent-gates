@@ -7,10 +7,11 @@ import {
 import {
   latestVersionTag,
   readChangeNotesSinceTag,
+  readCommittedGateSettings,
 } from "../shared/git-read.ts";
 import {
+  discoverRepositoryRoot,
   type GateSettings,
-  resolveRepositoryAndSettings,
   type VersionSettings,
 } from "../shared/settings.ts";
 import {
@@ -93,11 +94,15 @@ export const versionOptions = [
   },
 ] as const;
 
-function validateVersionInputs(input: {
-  readonly "--lead": string;
-  readonly "--date"?: string | undefined;
-  readonly "--repository"?: string | undefined;
-}):
+async function validateVersionInputs(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  input: {
+    readonly "--lead": string;
+    readonly "--date"?: string | undefined;
+    readonly "--repository"?: string | undefined;
+  },
+): Promise<
   | {
       readonly ok: true;
       readonly root: string;
@@ -106,10 +111,22 @@ function validateVersionInputs(input: {
       readonly lead: string;
       readonly date: string;
     }
-  | PrepareFailure {
-  const resolved = resolveRepositoryAndSettings(
+  | PrepareFailure
+> {
+  const repoResult = discoverRepositoryRoot(
     input["--repository"],
     process.cwd(),
+  );
+  if (!repoResult.ok)
+    return {
+      ok: false,
+      causeCode: "DOMAIN_GATES_REPOSITORY_NOT_FOUND",
+      message: repoResult.problem,
+    };
+  const resolved = await readCommittedGateSettings(
+    programs,
+    parsePath,
+    repoResult.root,
   );
   if (!resolved.ok) return resolved;
   const versions = resolved.settings.versions;
@@ -136,7 +153,7 @@ function validateVersionInputs(input: {
     };
   return {
     ok: true,
-    root: resolved.root,
+    root: repoResult.root,
     settings: resolved.settings,
     versions,
     lead: leadResult.value,
@@ -228,7 +245,7 @@ export async function buildPreparedAccount(
 ): Promise<
   { readonly ok: true; readonly account: PreparedAccount } | PrepareFailure
 > {
-  const checked = validateVersionInputs(input);
+  const checked = await validateVersionInputs(programs, parsePath, input);
   if (!checked.ok) return checked;
 
   const latestTagResult = await latestVersionTag(

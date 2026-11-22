@@ -27,6 +27,7 @@ const readOnlySubcommands = new Set([
   "ls-tree",
   "diff",
   "cat-file",
+  "rev-parse",
 ]);
 
 afterEach(() => {
