@@ -105,6 +105,7 @@ function isolatedGitArgs(
     "GIT_TERMINAL_PROMPT=0",
     "GIT_NO_REPLACE_OBJECTS=1",
     "GIT_CONFIG_NOSYSTEM=1",
+    "GIT_LITERAL_PATHSPECS=1",
     "git",
     "-C",
     root,
@@ -381,6 +382,46 @@ export function isNewlyAddedNote(
   return false;
 }
 
+export async function readCommittedNoteUtf8(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
+  notesFolder: string,
+  candidate: BlobCandidate,
+): Promise<
+  | { readonly ok: true; readonly text: string }
+  | {
+      readonly ok: false;
+      readonly kind: "invalid" | "git";
+      readonly problem: string;
+    }
+> {
+  if (candidate.invalidUtf8Path)
+    return {
+      ok: false,
+      kind: "invalid",
+      problem: `${notesFolder}/: filename is not valid UTF-8 text. Repair: rename the note to a valid UTF-8 ${notesFolder}/YYYY-MM-DD-<kebab-slug>.json filename.`,
+    };
+  if (!isPlainGitFileMode(candidate.mode))
+    return {
+      ok: false,
+      kind: "invalid",
+      problem: `${candidate.path}: must be a plain file in HEAD (git mode ${candidate.mode}). Repair: replace ${candidate.path} with a regular UTF-8 JSON file.`,
+    };
+  const blob = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
+    "blob",
+    candidate.blob,
+  ]);
+  if (!blob.ok) return { ok: false, kind: "git", problem: blob.problem };
+  if (hasInvalidUtf8Decoding(candidate.blob, blob.value))
+    return {
+      ok: false,
+      kind: "invalid",
+      problem: `${candidate.path}: is not valid UTF-8 text. Repair: save ${candidate.path} as UTF-8 JSON.`,
+    };
+  return { ok: true, text: blob.value };
+}
+
 export async function validateCommittedNote(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
@@ -409,26 +450,17 @@ export async function validateCommittedNote(
       kind: "invalid",
       problem: `${candidate.path}: filename must match ${notesFolder}/YYYY-MM-DD-<kebab-slug>.json with a valid date. Repair: rename the note to start with a valid ISO date and lowercase kebab-case slug.`,
     };
-  if (!isPlainGitFileMode(candidate.mode))
-    return {
-      ok: false,
-      kind: "invalid",
-      problem: `${candidate.path}: must be a plain file in HEAD (git mode ${candidate.mode}). Repair: replace ${candidate.path} with a regular UTF-8 JSON file.`,
-    };
-  const blob = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
-    "blob",
-    candidate.blob,
-  ]);
-  if (!blob.ok) return { ok: false, kind: "git", problem: blob.problem };
-  if (hasInvalidUtf8Decoding(candidate.blob, blob.value))
-    return {
-      ok: false,
-      kind: "invalid",
-      problem: `${candidate.path}: is not valid UTF-8 text. Repair: save ${candidate.path} as UTF-8 JSON.`,
-    };
+  const utf8 = await readCommittedNoteUtf8(
+    programs,
+    parsePath,
+    root,
+    notesFolder,
+    candidate,
+  );
+  if (!utf8.ok) return utf8;
   const parsed = parseChangeNote(
     candidate.path,
-    blob.value,
+    utf8.text,
     settings.changeNotes.affects,
   );
   if (!parsed.ok)

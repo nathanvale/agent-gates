@@ -66,7 +66,7 @@ export const versionOptions = [
     repeatable: false,
     value: {
       kind: "string",
-      minLength: 1,
+      minLength: 0,
       maxLength: 1024,
       choices: null,
       pattern: null,

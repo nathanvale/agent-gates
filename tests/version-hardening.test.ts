@@ -8,6 +8,7 @@ import {
   envelopeMessage,
   git,
   initGitRepo,
+  makeCustomRepo,
   makeVersionRepo,
   runGatesCli,
   writeTreeFile,
@@ -291,5 +292,171 @@ describe("PR 2 hardening tests for versions (R16, R21, concurrency, discoverabil
     expect(discover.exitCode).toBe(0);
     expect(discover.stdout).toContain("version-prepare");
     expect(discover.stdout).toContain("version-preview");
+  });
+
+  test("P1 & P2 hardening: branch sharing tag name, colon-prefixed notes folder, empty lead, nested versions folder, and R9 on changed released notes", () => {
+    const preview = (
+      repo: string,
+      stateDir: string,
+      lead: string,
+      date = "2026-11-23",
+    ) =>
+      runGatesCli(
+        [
+          "version",
+          "preview",
+          "--lead",
+          lead,
+          "--date",
+          date,
+          "--repository",
+          repo,
+          "--json",
+        ],
+        { cwd: repo, stateDir },
+      );
+
+    const { repo, stateDir } = makeVersionRepo(sandbox, {
+      "change-notes/2026-11-01-first.json": JSON.stringify({
+        kind: "added",
+        breaking: false,
+        affects: ["bootstrap"],
+        summary: "First.",
+        action: null,
+      }),
+    });
+    git(repo, "tag", "v0.1.0");
+    commitFiles(repo, "second breaking note", {
+      "change-notes/2026-11-02-second.json": JSON.stringify({
+        kind: "changed",
+        breaking: true,
+        affects: ["bootstrap"],
+        summary: "Second breaking.",
+        action: "Update callers.",
+      }),
+    });
+    git(repo, "tag", "v0.2.0");
+    git(repo, "branch", "v0.2.0");
+    commitFiles(repo, "third fix note", {
+      "change-notes/2026-11-03-third.json": JSON.stringify({
+        kind: "fixed",
+        breaking: false,
+        affects: ["bootstrap"],
+        summary: "Third fix.",
+        action: null,
+      }),
+    });
+
+    const shadowed = preview(repo, stateDir, "Shadowed tag test.");
+    expect(shadowed.exitCode).toBe(0);
+    expect(envelopeData(shadowed.envelope)).toMatchObject({
+      previousTag: "v0.2.0",
+      version: "0.2.1",
+      consumerCount: 1,
+    });
+
+    const emptyLead = preview(repo, stateDir, "");
+    expect(emptyLead.exitCode).toBe(2);
+    expect(emptyLead.envelope).toMatchObject({
+      result: { causeCode: "USAGE_GATES_INVALID_ARGUMENT" },
+    });
+    expect(envelopeMessage(emptyLead.envelope)).toContain("Repair:");
+
+    commitFiles(repo, "corrupt released note with invalid UTF-8", {
+      "change-notes/2026-11-01-first.json": new Uint8Array([0xff, 0xfe, 0x7b]),
+    });
+    const brokenReleased = preview(repo, stateDir, "Invalid released note.");
+    expect(brokenReleased.exitCode).toBe(3);
+    expect(brokenReleased.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_NOTE_INVALID" },
+    });
+
+    const colonRepo = makeCustomRepo(sandbox, {
+      changeNotes: {
+        folder: ":notes",
+        shippedFolders: ["src"],
+        affects: ["cli"],
+      },
+      versions: { folder: "versions", heading: "Repository version" },
+    });
+    writeTreeFile(
+      colonRepo.repo,
+      ":notes/2026-11-23-colon.json",
+      JSON.stringify({
+        kind: "added",
+        breaking: false,
+        affects: ["cli"],
+        summary: "Added colon folder note.",
+        action: null,
+      }),
+    );
+    git(
+      colonRepo.repo,
+      "--literal-pathspecs",
+      "add",
+      "--",
+      ":notes/2026-11-23-colon.json",
+    );
+    git(colonRepo.repo, "commit", "-q", "-m", "add note in colon folder");
+    const colonPreview = preview(
+      colonRepo.repo,
+      colonRepo.stateDir,
+      "Colon folder cut.",
+    );
+    expect(colonPreview.exitCode).toBe(0);
+    expect(envelopeData(colonPreview.envelope)).toMatchObject({
+      version: "0.1.0",
+      consumerCount: 1,
+    });
+    git(colonRepo.repo, "tag", "v0.1.0");
+    writeTreeFile(
+      colonRepo.repo,
+      ":notes/2026-11-24-colon-fix.json",
+      JSON.stringify({
+        kind: "fixed",
+        breaking: false,
+        affects: ["cli"],
+        summary: "Fixed colon folder note.",
+        action: null,
+      }),
+    );
+    git(
+      colonRepo.repo,
+      "--literal-pathspecs",
+      "add",
+      "--",
+      ":notes/2026-11-24-colon-fix.json",
+    );
+    git(colonRepo.repo, "commit", "-q", "-m", "add second colon note");
+    const colonAfterTag = preview(
+      colonRepo.repo,
+      colonRepo.stateDir,
+      "Colon folder patch.",
+      "2026-11-24",
+    );
+    expect(colonAfterTag.exitCode).toBe(0);
+    expect(envelopeData(colonAfterTag.envelope)).toMatchObject({
+      previousTag: "v0.1.0",
+      version: "0.1.1",
+      consumerCount: 1,
+    });
+
+    const nestedRepo = makeCustomRepo(sandbox, {
+      changeNotes: {
+        folder: "notes",
+        shippedFolders: ["src"],
+        affects: ["cli"],
+      },
+      versions: { folder: "notes/versions", heading: "Repository version" },
+    });
+    const nestedSettings = preview(
+      nestedRepo.repo,
+      nestedRepo.stateDir,
+      "Nested folder cut.",
+    );
+    expect(nestedSettings.exitCode).toBe(3);
+    expect(nestedSettings.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_SETTINGS_INVALID" },
+    });
   });
 });

@@ -18,6 +18,7 @@ import {
   type GitResult,
   isNewlyAddedNote,
   isNotePath,
+  readCommittedNoteUtf8,
   resolveCommitOid,
   runReadOnlyGit,
   splitNul,
@@ -33,6 +34,8 @@ type VersionTag = {
 const versionTagPattern = /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/;
 const replacementCharacter = "\uFFFD";
 
+const tagRefPrefix = "refs/tags/";
+
 export async function latestVersionTag(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
@@ -41,16 +44,18 @@ export async function latestVersionTag(
 ): Promise<GitResult<VersionTag | undefined>> {
   const ran = await runReadOnlyGit(programs, parsePath, root, "for-each-ref", [
     `--merged=${headOid}`,
-    "--format=%(refname:short)",
+    "--format=%(refname)",
     "refs/tags",
   ]);
   if (!ran.ok) return ran;
   const tags: VersionTag[] = [];
   for (const line of ran.value.split("\n")) {
-    const match = versionTagPattern.exec(line);
+    if (!line.startsWith(tagRefPrefix)) continue;
+    const tag = line.slice(tagRefPrefix.length);
+    const match = versionTagPattern.exec(tag);
     const version = match?.[1];
     if (version !== undefined && parseRepositoryVersion(version).ok)
-      tags.push({ tag: line, version });
+      tags.push({ tag, version });
   }
   tags.sort((left, right) =>
     compareRepositoryVersions(left.version, right.version),
@@ -171,14 +176,28 @@ async function candidatesSinceTag(
     notesFolder,
   );
   if (!diff.ok) return { ok: false, kind: "git", problem: diff.problem };
-  const candidates = diff.value
-    .filter((entry) => isNewlyAddedNote(notesFolder, entry))
-    .map(({ mode, blob, path, invalidUtf8Path }) => ({
-      mode,
-      blob,
-      path,
-      invalidUtf8Path,
-    }));
+  const candidates: BlobCandidate[] = [];
+  for (const entry of diff.value) {
+    if (entry.status === "D" || !isNotePath(notesFolder, entry.path)) continue;
+    const candidate: BlobCandidate = {
+      mode: entry.mode,
+      blob: entry.blob,
+      path: entry.path,
+      invalidUtf8Path: entry.invalidUtf8Path,
+    };
+    if (isNewlyAddedNote(notesFolder, entry)) {
+      candidates.push(candidate);
+      continue;
+    }
+    const checked = await readCommittedNoteUtf8(
+      programs,
+      parsePath,
+      root,
+      notesFolder,
+      candidate,
+    );
+    if (!checked.ok) return checked;
+  }
   if (candidates.length === 0)
     return {
       ok: true,
@@ -246,6 +265,17 @@ export async function readChangeNotesSinceTag(
   const { candidates, priorHistory } = collected.value;
   const entries: ChangeNoteEntry[] = [];
   for (const candidate of candidates) {
+    if (priorHistory?.ancestorPaths.has(candidate.path)) {
+      const checked = await readCommittedNoteUtf8(
+        programs,
+        parsePath,
+        root,
+        settings.changeNotes.folder,
+        candidate,
+      );
+      if (!checked.ok) return checked;
+      continue;
+    }
     const validated = await validateCommittedNote(
       programs,
       parsePath,
@@ -255,11 +285,9 @@ export async function readChangeNotesSinceTag(
     );
     if (!validated.ok) return validated;
     if (
-      priorHistory !== undefined &&
-      (priorHistory.ancestorPaths.has(candidate.path) ||
-        priorHistory.fingerprints.has(
-          canonicalChangeNoteKey(validated.entry.note),
-        ))
+      priorHistory?.fingerprints.has(
+        canonicalChangeNoteKey(validated.entry.note),
+      )
     )
       continue;
     entries.push(validated.entry);

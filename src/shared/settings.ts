@@ -403,17 +403,22 @@ function parseVersionsSection(
   if (!section.ok) return section;
   const folder = parseFolder(section.fields.get("folder"), "versions.folder");
   if (!folder.ok) return folder;
-  if (notesFolder === folder.value)
+  const overlaps =
+    notesFolder === folder.value ||
+    folder.value.startsWith(`${notesFolder}/`) ||
+    notesFolder.startsWith(`${folder.value}/`);
+  if (overlaps)
     return {
       ok: false,
-      problem: `${GATE_SETTINGS_FILE}: changeNotes.folder and versions.folder must be distinct folders. Repair: choose separate folder names.`,
+      problem: `${GATE_SETTINGS_FILE}: changeNotes.folder and versions.folder must be separate, non-overlapping folders. Repair: choose disjoint folder names.`,
     };
   const heading = parseHeading(section.fields.get("heading"));
-  if (!heading.ok) return heading;
-  return {
-    ok: true,
-    value: Object.freeze({ folder: folder.value, heading: heading.value }),
-  };
+  return heading.ok
+    ? {
+        ok: true,
+        value: Object.freeze({ folder: folder.value, heading: heading.value }),
+      }
+    : heading;
 }
 
 export function parseGateSettingsText(rawText: string): SettingsLoadResult {
@@ -454,38 +459,29 @@ function loadGateSettings(repositoryRoot: string): SettingsLoadResult {
 export function resolveRepositoryAndSettings(
   explicitFolder: string | undefined,
   cwd: string,
-):
-  | {
-      readonly ok: true;
-      readonly root: string;
-      readonly settings: GateSettings;
-    }
-  | {
-      readonly ok: false;
-      readonly causeCode:
-        | "DOMAIN_GATES_REPOSITORY_NOT_FOUND"
-        | "DOMAIN_GATES_SETTINGS_MISSING"
-        | "DOMAIN_GATES_SETTINGS_INVALID";
-      readonly message: string;
-    } {
+) {
   const repoResult = discoverRepositoryRoot(explicitFolder, cwd);
   if (!repoResult.ok)
     return {
-      ok: false,
-      causeCode: "DOMAIN_GATES_REPOSITORY_NOT_FOUND",
+      ok: false as const,
+      causeCode: "DOMAIN_GATES_REPOSITORY_NOT_FOUND" as const,
       message: repoResult.problem,
     };
   const settingsResult = loadGateSettings(repoResult.root);
   if (!settingsResult.ok)
     return {
-      ok: false,
+      ok: false as const,
       causeCode:
         settingsResult.kind === "missing"
-          ? "DOMAIN_GATES_SETTINGS_MISSING"
-          : "DOMAIN_GATES_SETTINGS_INVALID",
+          ? ("DOMAIN_GATES_SETTINGS_MISSING" as const)
+          : ("DOMAIN_GATES_SETTINGS_INVALID" as const),
       message: settingsResult.problem,
     };
-  return { ok: true, root: repoResult.root, settings: settingsResult.settings };
+  return {
+    ok: true as const,
+    root: repoResult.root,
+    settings: settingsResult.settings,
+  };
 }
 
 export function isShippedPath(settings: GateSettings, path: string): boolean {
