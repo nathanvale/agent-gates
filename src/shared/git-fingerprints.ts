@@ -1,12 +1,14 @@
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
 import {
   canonicalChangeNoteKey,
+  isChangeNoteFile,
   parseChangeNote,
 } from "../change-note/rules.ts";
 import {
   type DiffEntry,
   diffResolvedRange,
   type GitResult,
+  hasInvalidUtf8Decoding,
   isNotePath,
   isPlainGitFileMode,
   readCommittedGateSettings,
@@ -23,7 +25,55 @@ export type BaseNoteHistory = {
 type CommitAncestry = {
   readonly paths: Set<string>;
   readonly blobs: Set<string>;
+  readonly fingerprints: Set<string>;
 };
+
+async function readBlobFingerprint(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
+  path: string,
+  blob: string,
+  allowedAffects: ReadonlySet<string>,
+): Promise<GitResult<string | undefined>> {
+  const content = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
+    "blob",
+    blob,
+  ]);
+  if (!content.ok) return content;
+  if (hasInvalidUtf8Decoding(blob, content.value))
+    return { ok: true, value: undefined };
+  const parsed = parseChangeNote(path, content.value, allowedAffects);
+  return {
+    ok: true,
+    value: parsed.ok ? canonicalChangeNoteKey(parsed.note) : undefined,
+  };
+}
+
+function parseTreeNoteRecord(
+  record: string,
+  notesFolder: string,
+):
+  | {
+      readonly path: string;
+      readonly blob: string;
+      readonly validName: boolean;
+    }
+  | undefined {
+  const tab = record.indexOf("\t");
+  if (tab < 0) return undefined;
+  const path = record.slice(tab + 1);
+  if (!isNotePath(notesFolder, path)) return undefined;
+  const [mode = "", type = "", blob = ""] = record.slice(0, tab).split(" ");
+  if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "")
+    return undefined;
+  const file = path.slice(notesFolder.length + 1);
+  return {
+    path,
+    blob,
+    validName: !file.includes("/") && isChangeNoteFile(file),
+  };
+}
 
 async function collectFolderNotes(
   programs: ProgramsCapability,
@@ -32,9 +82,7 @@ async function collectFolderNotes(
   commitOid: string,
   notesFolder: string,
   allowedAffects: ReadonlySet<string>,
-  fingerprints: Set<string>,
-  paths: Set<string>,
-  blobs: Set<string>,
+  state: CommitAncestry,
 ): Promise<GitResult<undefined>> {
   const listed = await runReadOnlyGit(programs, parsePath, root, "ls-tree", [
     "-r",
@@ -46,85 +94,51 @@ async function collectFolderNotes(
   ]);
   if (!listed.ok) return listed;
   for (const record of splitNul(listed.value)) {
-    const tab = record.indexOf("\t");
-    if (tab < 0) continue;
-    const path = record.slice(tab + 1);
-    if (!isNotePath(notesFolder, path)) continue;
-    const [mode = "", type = "", blob = ""] = record.slice(0, tab).split(" ");
-    if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "") continue;
-    paths.add(path);
-    blobs.add(blob);
-    const content = await runReadOnlyGit(
+    const entry = parseTreeNoteRecord(record, notesFolder);
+    if (entry === undefined) continue;
+    state.paths.add(entry.path);
+    state.blobs.add(entry.blob);
+    if (!entry.validName) continue;
+    const fp = await readBlobFingerprint(
       programs,
       parsePath,
       root,
-      "cat-file",
-      ["blob", blob],
+      entry.path,
+      entry.blob,
+      allowedAffects,
     );
-    if (!content.ok) return content;
-    const parsed = parseChangeNote(path, content.value, allowedAffects);
-    if (parsed.ok) fingerprints.add(canonicalChangeNoteKey(parsed.note));
+    if (!fp.ok) return fp;
+    if (fp.value !== undefined) state.fingerprints.add(fp.value);
   }
   return { ok: true, value: undefined };
 }
 
-async function matchesBaseFingerprint(
+async function recordEditedAncestor(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
+  next: CommitAncestry,
   path: string,
   blob: string,
   allowedAffects: ReadonlySet<string>,
-  fingerprints: ReadonlySet<string>,
-): Promise<GitResult<boolean>> {
-  const content = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
-    "blob",
-    blob,
-  ]);
-  if (!content.ok) return content;
-  const parsed = parseChangeNote(path, content.value, allowedAffects);
-  return {
-    ok: true,
-    value: parsed.ok && fingerprints.has(canonicalChangeNoteKey(parsed.note)),
-  };
-}
-
-async function applyAddedEntry(
-  programs: ProgramsCapability,
-  parsePath: (value: string) => ParsedPath,
-  root: string,
-  parent: CommitAncestry,
-  next: CommitAncestry,
-  entry: DiffEntry,
-  allowedAffects: ReadonlySet<string>,
-  fingerprints: ReadonlySet<string>,
 ): Promise<GitResult<undefined>> {
-  if (!isPlainGitFileMode(entry.mode) || entry.blob === "")
-    return { ok: true, value: undefined };
-  if (parent.blobs.has(entry.blob)) {
-    next.paths.add(entry.path);
-    next.blobs.add(entry.blob);
-    return { ok: true, value: undefined };
-  }
-  if (!entry.path.endsWith(".json")) return { ok: true, value: undefined };
-  const matched = await matchesBaseFingerprint(
+  if (blob === "") return { ok: true, value: undefined };
+  next.blobs.add(blob);
+  if (!path.endsWith(".json")) return { ok: true, value: undefined };
+  const fp = await readBlobFingerprint(
     programs,
     parsePath,
     root,
-    entry.path,
-    entry.blob,
+    path,
+    blob,
     allowedAffects,
-    fingerprints,
   );
-  if (!matched.ok) return matched;
-  if (matched.value) {
-    next.paths.add(entry.path);
-    next.blobs.add(entry.blob);
-  }
+  if (!fp.ok) return fp;
+  if (fp.value !== undefined) next.fingerprints.add(fp.value);
   return { ok: true, value: undefined };
 }
 
-async function applyDiffEntry(
+async function applyNonAddEntry(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
@@ -132,36 +146,69 @@ async function applyDiffEntry(
   next: CommitAncestry,
   entry: DiffEntry,
   allowedAffects: ReadonlySet<string>,
-  fingerprints: ReadonlySet<string>,
 ): Promise<GitResult<undefined>> {
   if (entry.status === "D") {
     next.paths.delete(entry.path);
     return { ok: true, value: undefined };
   }
   if (entry.status.startsWith("R")) {
-    if (entry.oldPath !== undefined && parent.paths.has(entry.oldPath)) {
-      next.paths.delete(entry.oldPath);
-      next.paths.add(entry.path);
-      if (entry.blob !== "") next.blobs.add(entry.blob);
-    }
+    if (entry.oldPath === undefined || !parent.paths.has(entry.oldPath))
+      return { ok: true, value: undefined };
+    next.paths.delete(entry.oldPath);
+    next.paths.add(entry.path);
+    return recordEditedAncestor(
+      programs,
+      parsePath,
+      root,
+      next,
+      entry.path,
+      entry.blob,
+      allowedAffects,
+    );
+  }
+  if (entry.status === "M" && parent.paths.has(entry.path))
+    return recordEditedAncestor(
+      programs,
+      parsePath,
+      root,
+      next,
+      entry.path,
+      entry.blob,
+      allowedAffects,
+    );
+  return { ok: true, value: undefined };
+}
+
+async function applyAddedEntry(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
+  next: CommitAncestry,
+  entry: DiffEntry,
+  allowedAffects: ReadonlySet<string>,
+): Promise<GitResult<undefined>> {
+  if (!isPlainGitFileMode(entry.mode) || entry.blob === "")
+    return { ok: true, value: undefined };
+  if (next.blobs.has(entry.blob)) {
+    next.paths.add(entry.path);
+    next.blobs.add(entry.blob);
     return { ok: true, value: undefined };
   }
-  if (entry.status === "M") {
-    if (parent.paths.has(entry.path) && entry.blob !== "")
-      next.blobs.add(entry.blob);
-    return { ok: true, value: undefined };
-  }
-  if (entry.status !== "A") return { ok: true, value: undefined };
-  return applyAddedEntry(
+  if (!entry.path.endsWith(".json")) return { ok: true, value: undefined };
+  const fp = await readBlobFingerprint(
     programs,
     parsePath,
     root,
-    parent,
-    next,
-    entry,
+    entry.path,
+    entry.blob,
     allowedAffects,
-    fingerprints,
   );
+  if (!fp.ok) return fp;
+  if (fp.value !== undefined && next.fingerprints.has(fp.value)) {
+    next.paths.add(entry.path);
+    next.blobs.add(entry.blob);
+  }
+  return { ok: true, value: undefined };
 }
 
 function mergeCommitAncestry(
@@ -176,6 +223,7 @@ function mergeCommitAncestry(
   }
   for (const path of next.paths) existing.paths.add(path);
   for (const blob of next.blobs) existing.blobs.add(blob);
+  for (const fp of next.fingerprints) existing.fingerprints.add(fp);
 }
 
 function parseRevListParents(
@@ -203,7 +251,6 @@ async function applyParentEdge(
   commitOid: string,
   parentState: CommitAncestry,
   allowedAffects: ReadonlySet<string>,
-  fingerprints: ReadonlySet<string>,
 ): Promise<GitResult<CommitAncestry>> {
   const diff = await diffResolvedRange(
     programs,
@@ -215,9 +262,11 @@ async function applyParentEdge(
   const next: CommitAncestry = {
     paths: new Set(parentState.paths),
     blobs: new Set(parentState.blobs),
+    fingerprints: new Set(parentState.fingerprints),
   };
   for (const entry of diff.value) {
-    const applied = await applyDiffEntry(
+    if (entry.status === "A") continue;
+    const applied = await applyNonAddEntry(
       programs,
       parsePath,
       root,
@@ -225,7 +274,18 @@ async function applyParentEdge(
       next,
       entry,
       allowedAffects,
-      fingerprints,
+    );
+    if (!applied.ok) return applied;
+  }
+  for (const entry of diff.value) {
+    if (entry.status !== "A") continue;
+    const applied = await applyAddedEntry(
+      programs,
+      parsePath,
+      root,
+      next,
+      entry,
+      allowedAffects,
     );
     if (!applied.ok) return applied;
   }
@@ -239,11 +299,10 @@ async function trackAncestryGraph(
   fromOid: string,
   toOid: string,
   allowedAffects: ReadonlySet<string>,
-  fingerprints: ReadonlySet<string>,
   baseState: CommitAncestry,
-): Promise<GitResult<ReadonlySet<string>>> {
+): Promise<GitResult<CommitAncestry>> {
   if (baseState.paths.size === 0 || fromOid === toOid)
-    return { ok: true, value: baseState.paths };
+    return { ok: true, value: baseState };
   const listed = await runReadOnlyGit(programs, parsePath, root, "rev-list", [
     "--topo-order",
     "--reverse",
@@ -265,7 +324,6 @@ async function trackAncestryGraph(
         commit,
         parentState,
         allowedAffects,
-        fingerprints,
       );
       if (!next.ok) return next;
       mergeCommitAncestry(ancestryByCommit, commit, next.value);
@@ -273,7 +331,7 @@ async function trackAncestryGraph(
   }
   return {
     ok: true,
-    value: ancestryByCommit.get(toOid)?.paths ?? baseState.paths,
+    value: ancestryByCommit.get(toOid) ?? baseState,
   };
 }
 
@@ -285,9 +343,11 @@ export async function readTreeNoteHistory(
   headOid: string,
   settings: GateSettings,
 ): Promise<GitResult<BaseNoteHistory>> {
-  const fingerprints = new Set<string>();
-  const basePaths = new Set<string>();
-  const baseBlobs = new Set<string>();
+  const baseState: CommitAncestry = {
+    paths: new Set(),
+    blobs: new Set(),
+    fingerprints: new Set(),
+  };
   const headScan = await collectFolderNotes(
     programs,
     parsePath,
@@ -295,9 +355,7 @@ export async function readTreeNoteHistory(
     treeCommitOid,
     settings.changeNotes.folder,
     settings.changeNotes.affects,
-    fingerprints,
-    basePaths,
-    baseBlobs,
+    baseState,
   );
   if (!headScan.ok) return headScan;
   const priorSettings = await readCommittedGateSettings(
@@ -328,27 +386,27 @@ export async function readTreeNoteHistory(
         treeCommitOid,
         priorSettings.settings.changeNotes.folder,
         priorSettings.settings.changeNotes.affects,
-        fingerprints,
-        basePaths,
-        baseBlobs,
+        baseState,
       );
       if (!priorScan.ok) return priorScan;
     }
   }
-  const ancestorPaths = await trackAncestryGraph(
+  const finalState = await trackAncestryGraph(
     programs,
     parsePath,
     root,
     treeCommitOid,
     headOid,
     combinedAffects,
-    fingerprints,
-    { paths: basePaths, blobs: baseBlobs },
+    baseState,
   );
-  if (!ancestorPaths.ok) return ancestorPaths;
+  if (!finalState.ok) return finalState;
   return {
     ok: true,
-    value: { fingerprints, ancestorPaths: ancestorPaths.value },
+    value: {
+      fingerprints: finalState.value.fingerprints,
+      ancestorPaths: finalState.value.paths,
+    },
   };
 }
 
