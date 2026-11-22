@@ -1,0 +1,12 @@
+{
+  "changeNotes": {
+    "folder": "change-notes",
+    "shippedFiles": ["package.json"],
+    "shippedFolders": ["src"],
+    "affects": ["change-note", "settings", "versions"]
+  },
+  "versions": {
+    "folder": "versions",
+    "heading": "Repository version"
+  }
+}

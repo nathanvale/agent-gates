@@ -9,6 +9,44 @@
     "config/template-rules.mjs"
   ],
   "entry": ["tests/cli.test.ts"],
+  "boundaries": {
+    "zones": [
+      {
+        "name": "entry",
+        "patterns": ["src/cli.ts", "src/commands.ts"]
+      },
+      {
+        "name": "rules",
+        "patterns": ["src/**/rules.ts"]
+      },
+      {
+        "name": "subject",
+        "autoDiscover": ["src"]
+      }
+    ],
+    "rules": [
+      {
+        "from": "entry",
+        "allow": ["entry", "rules", "subject"]
+      },
+      {
+        "from": "rules",
+        "allow": ["rules"]
+      },
+      {
+        "from": "subject",
+        "allow": ["rules", "subject/shared"]
+      },
+      {
+        "from": "subject/shared",
+        "allow": ["rules"]
+      }
+    ],
+    "coverage": {
+      "requireAllFiles": true,
+      "allowUnmatched": ["tests/**", "config/**", "eslint.config.mjs"]
+    }
+  },
   "typeAware": {
     "enabled": true,
     "projects": ["tsconfig.json"],
@@ -26,7 +64,7 @@
     "maxFileLines": 500
   },
   "rules": {
-    "boundary-violation": "off",
+    "boundary-violation": "error",
     "circular-dependencies": "error",
     "coverage-gaps": "off",
     "css-broken-reference": "off",

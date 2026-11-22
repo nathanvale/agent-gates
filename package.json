@@ -3,9 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "agent-gates": "./src/cli.ts"
+  },
   "packageManager": "bun@1.4.4",
   "scripts": {
     "start": "bun run src/cli.ts",
+    "check:change-notes": "bun run src/cli.ts change-note check",
     "check": "bun run lint && bun run format:check && bun run typecheck && bun run test && bun run --silent quality:fallow",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
