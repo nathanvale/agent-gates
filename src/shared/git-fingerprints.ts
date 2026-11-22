@@ -7,6 +7,7 @@ import {
 import {
   type DiffEntry,
   diffResolvedRange,
+  gitOutputLimitBytes,
   type GitResult,
   hasInvalidUtf8Decoding,
   isNotePath,
@@ -36,6 +37,14 @@ async function readBlobFingerprint(
   blob: string,
   allowedAffects: ReadonlySet<string>,
 ): Promise<GitResult<string | undefined>> {
+  const sized = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
+    "-s",
+    blob,
+  ]);
+  if (!sized.ok) return sized;
+  const byteSize = Number(sized.value.trim());
+  if (!Number.isFinite(byteSize) || byteSize >= gitOutputLimitBytes)
+    return { ok: true, value: undefined };
   const content = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
     "blob",
     blob,

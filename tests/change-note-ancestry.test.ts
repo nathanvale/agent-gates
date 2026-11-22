@@ -347,4 +347,29 @@ describe("Per-commit ancestry tracking (copy-then-edit, merged renames, destinat
       result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
     });
   });
+
+  test("P1 (r11): adding an unrelated >4 MiB asset alongside a valid new note passes R8", () => {
+    const { repo, stateDir } = makeBaseRepo();
+    git(repo, "checkout", "-b", "large-asset-with-note");
+    const largePayload = new Uint8Array(4 * 1024 * 1024 + 1024);
+    largePayload.fill(0x41);
+    commitFiles(repo, "add large unrelated asset and valid new note", {
+      "assets/large.bin": largePayload,
+      "src/app.ts": "export const v = 2;\n",
+      "change-notes/2026-11-22-valid-new.json": `${JSON.stringify(
+        {
+          kind: "added",
+          breaking: false,
+          affects: ["cli"],
+          summary: "Added feature with a large asset.",
+          action: null,
+        },
+        null,
+        2,
+      )}\n`,
+    });
+
+    const checked = checkMain(repo, stateDir);
+    expect(checked.exitCode).toBe(0);
+  });
 });
