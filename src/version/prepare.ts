@@ -7,7 +7,9 @@ import {
   noInput,
   nothingChanged,
   pendingStep,
+  repositoryScopeId,
   stationWords,
+  targetScopeKey,
   unresolvedRepair,
 } from "../shared/causes.ts";
 import {
@@ -275,7 +277,8 @@ export function versionPrepareCommand(
           },
         );
 
-      const scopeKey = `${account.repository}:${account.relativePath}`;
+      const scopeKey = targetScopeKey(account.repository, account.relativePath);
+      const repoHash = repositoryScopeId(account.repository);
       let conflictProblem: string | undefined;
       const outcome = await state.transaction(
         context.state,
@@ -283,6 +286,10 @@ export function versionPrepareCommand(
           command: prepareIdentity,
           scope: {
             resources: [{ resource: "version-account", key: scopeKey }],
+          },
+          revisions: {
+            repositoryHash: repoHash,
+            target: account.relativePath,
           },
           facts: {
             repository: account.repository,

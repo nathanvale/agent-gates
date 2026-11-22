@@ -6,7 +6,9 @@ import {
   noInput,
   nothingChanged,
   pendingStep,
+  repositoryScopeId,
   stationWords,
+  targetScopeKey,
   unresolvedRepair,
 } from "../shared/causes.ts";
 import {
@@ -18,10 +20,10 @@ import { resolveRepositoryAndSettings } from "../shared/settings.ts";
 import {
   changeNoteKinds,
   formatChangeNoteJson,
+  formatLocalIsoDate,
   isValidIsoDate,
   isValidSlug,
   parseChangeNote,
-  todayLocalIsoDate,
 } from "./rules.ts";
 
 const identity = "agent-gates.change-note-add";
@@ -37,6 +39,12 @@ type AddInput = {
   readonly "--repository"?: string | undefined;
 };
 
+function failPrepared<
+  Code extends "DOMAIN_GATES_NOTE_INVALID" | "DOMAIN_GATES_FILE_EXISTS",
+>(causeCode: Code, message: string) {
+  return { ok: false as const, causeCode, message };
+}
+
 function prepareNoteWrite(input: AddInput) {
   const resolved = resolveRepositoryAndSettings(
     input["--repository"],
@@ -44,19 +52,17 @@ function prepareNoteWrite(input: AddInput) {
   );
   if (!resolved.ok) return resolved;
   const { root, settings } = resolved;
-  const date = input["--date"] ?? todayLocalIsoDate();
+  const date = input["--date"] ?? formatLocalIsoDate(new Date());
   if (!isValidIsoDate(date))
-    return {
-      ok: false as const,
-      causeCode: "DOMAIN_GATES_NOTE_INVALID" as const,
-      message: `Invalid date "${date}". Repair: pass --date YYYY-MM-DD with a real calendar date.`,
-    };
+    return failPrepared(
+      "DOMAIN_GATES_NOTE_INVALID",
+      `Invalid date "${date}". Repair: pass --date YYYY-MM-DD with a real calendar date.`,
+    );
   if (!isValidSlug(input["--slug"]))
-    return {
-      ok: false as const,
-      causeCode: "DOMAIN_GATES_NOTE_INVALID" as const,
-      message: `Invalid slug "${input["--slug"]}". Repair: use lowercase letters, digits, and single hyphens.`,
-    };
+    return failPrepared(
+      "DOMAIN_GATES_NOTE_INVALID",
+      `Invalid slug "${input["--slug"]}". Repair: use lowercase letters, digits, and single hyphens.`,
+    );
   const file = `${date}-${input["--slug"]}.json`;
   const relativePath = `${settings.changeNotes.folder}/${file}`;
   const candidateJson = JSON.stringify({
@@ -72,22 +78,14 @@ function prepareNoteWrite(input: AddInput) {
     settings.changeNotes.affects,
   );
   if (!parsed.ok)
-    return {
-      ok: false as const,
-      causeCode: "DOMAIN_GATES_NOTE_INVALID" as const,
-      message: parsed.problem,
-    };
+    return failPrepared("DOMAIN_GATES_NOTE_INVALID", parsed.problem);
   const targetCheck = checkWritableTarget(
     root,
     settings.changeNotes.folder,
     file,
   );
   if (!targetCheck.ok)
-    return {
-      ok: false as const,
-      causeCode: "DOMAIN_GATES_FILE_EXISTS" as const,
-      message: targetCheck.problem,
-    };
+    return failPrepared("DOMAIN_GATES_FILE_EXISTS", targetCheck.problem);
   return {
     ok: true as const,
     root,
@@ -391,14 +389,18 @@ export function changeNoteAddCommand(state: GatesState) {
           { commandIdentity: identity, causeCode: prepared.causeCode },
           { message: prepared.message, data: null, effects: nothingChanged },
         );
-
-      const scopeKey = `${prepared.root}:${prepared.relativePath}`;
+      const scopeKey = targetScopeKey(prepared.root, prepared.relativePath);
+      const repoHash = repositoryScopeId(prepared.root);
       let conflictProblem: string | undefined;
       const outcome = await state.transaction(
         context.state,
         {
           command: identity,
           scope: { resources: [{ resource: "change-note", key: scopeKey }] },
+          revisions: {
+            repositoryHash: repoHash,
+            target: prepared.relativePath,
+          },
           facts: {
             repository: prepared.root,
             relativePath: prepared.relativePath,
@@ -437,7 +439,6 @@ export function changeNoteAddCommand(state: GatesState) {
           );
         },
       );
-
       if (conflictProblem !== undefined)
         return context.result(
           { commandIdentity: identity, causeCode: "DOMAIN_GATES_FILE_EXISTS" },
@@ -480,7 +481,6 @@ export function changeNoteAddCommand(state: GatesState) {
             transaction: outcome.proof,
           },
         );
-
       return context.result(
         { commandIdentity: identity, causeCode: completedSuccess },
         {

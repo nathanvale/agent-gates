@@ -8,13 +8,13 @@ import {
   compareRepositoryVersions,
   parseRepositoryVersion,
 } from "../version/rules.ts";
+import { readTreeNoteFingerprints } from "./git-fingerprints.ts";
 import {
   type BlobCandidate,
   diffResolvedRange,
   type GitResult,
   isNewlyAddedNote,
   isNotePath,
-  readTreeNoteFingerprints,
   resolveCommitOid,
   runReadOnlyGit,
   splitNul,

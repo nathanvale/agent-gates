@@ -4,6 +4,7 @@ import {
   type GatesState,
   noInput,
   nothingChanged,
+  repositoryScopeId,
   stationWords,
   unchangedSuccess,
 } from "../shared/causes.ts";
@@ -111,20 +112,27 @@ export function pendingCommand(state: GatesState) {
             effects: nothingChanged,
           },
         );
-      const repoPrefix = `key:${repoResult.root}:`;
+      const repoHash = repositoryScopeId(repoResult.root);
+      const hashedPrefix = `key:repo:${repoHash}:`;
       const allEntries = await Promise.all(
         report.unfinished.map(async (entry) => {
           const history = await state.history(entry.operationId);
-          const rawKey = history.ok
-            ? history.history.scope.resources[0]?.keys[0]
-            : undefined;
-          if (rawKey === undefined || !rawKey.startsWith(repoPrefix))
-            return undefined;
+          if (!history.ok) return undefined;
+          const rawKey = history.history.scope.resources[0]?.keys[0];
+          const matchesHash =
+            history.history.revisions.repositoryHash === repoHash ||
+            (rawKey !== undefined && rawKey.startsWith(hashedPrefix));
+          if (!matchesHash) return undefined;
+          const target =
+            history.history.revisions.target ??
+            (rawKey !== undefined && rawKey.startsWith(hashedPrefix)
+              ? rawKey.slice(hashedPrefix.length)
+              : "");
           return {
             operationId: entry.operationId,
             commandIdentity: entry.commandIdentity,
             runId: entry.runId,
-            target: rawKey.slice(repoPrefix.length),
+            target,
             effects: [...entry.effects],
           };
         }),

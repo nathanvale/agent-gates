@@ -53,8 +53,7 @@ export function isValidSlug(value: string): boolean {
   return slugPattern.test(value);
 }
 
-export function todayLocalIsoDate(): string {
-  const now = new Date();
+export function formatLocalIsoDate(now: Date): string {
   const year = String(now.getFullYear()).padStart(4, "0");
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
@@ -239,7 +238,7 @@ export function canonicalChangeNoteKey(note: ChangeNote): string {
   return JSON.stringify({
     kind: note.kind,
     breaking: note.breaking,
-    affects: [...note.affects],
+    affects: [...new Set(note.affects)].sort(compareText),
     summary: note.summary,
     action: note.action,
   });

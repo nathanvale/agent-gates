@@ -1,8 +1,8 @@
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
 import {
   type ChangeNoteEntry,
+  formatLocalIsoDate,
   isValidIsoDate,
-  todayLocalIsoDate,
 } from "../change-note/rules.ts";
 import {
   readCommittedGateSettings,
@@ -178,7 +178,7 @@ async function validateVersionInputs(
       causeCode: "DOMAIN_GATES_VERSION_INVALID",
       message: leadResult.problem,
     };
-  const date = input["--date"] ?? todayLocalIsoDate();
+  const date = input["--date"] ?? formatLocalIsoDate(new Date());
   if (!isValidIsoDate(date))
     return {
       ok: false,

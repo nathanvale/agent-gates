@@ -1,8 +1,19 @@
+import { createHash } from "node:crypto";
 import { commonCauses } from "agent-cli-kernel";
 import type { CauseTable } from "agent-cli-kernel";
 import type { stateAddon } from "agent-cli-kernel/addons/state";
 
 export type GatesState = ReturnType<typeof stateAddon>;
+
+export function repositoryScopeId(root: string): string {
+  return createHash("sha256").update(root).digest("hex");
+}
+
+export function targetScopeKey(root: string, relativePath: string): string {
+  const repoHash = repositoryScopeId(root);
+  const pathHash = createHash("sha256").update(relativePath).digest("hex");
+  return `repo:${repoHash}:${pathHash}`;
+}
 
 export const cli = "agent-gates";
 

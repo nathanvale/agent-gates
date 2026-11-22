@@ -1,7 +1,6 @@
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
 import { programDetails } from "agent-cli-kernel/addons/programs";
 import {
-  canonicalChangeNoteKey,
   type ChangeNoteEntry,
   isChangeNoteFile,
   parseChangeNote,
@@ -59,7 +58,7 @@ const clearedGitEnvNames = [
   "GIT_CONFIG_SYSTEM",
 ] as const;
 
-function isPlainGitFileMode(mode: string): boolean {
+export function isPlainGitFileMode(mode: string): boolean {
   return mode === "100644" || mode === "100755";
 }
 
@@ -272,75 +271,15 @@ export async function diffBaseToHead(
   };
 }
 
-export async function readTreeNoteFingerprints(
-  programs: ProgramsCapability,
-  parsePath: (value: string) => ParsedPath,
-  root: string,
-  treeCommitOid: string,
-  settings: GateSettings,
-): Promise<GitResult<ReadonlySet<string>>> {
-  const notesFolder = settings.changeNotes.folder;
-  const listed = await runReadOnlyGit(programs, parsePath, root, "ls-tree", [
-    "-r",
-    "-z",
-    "--full-tree",
-    treeCommitOid,
-    "--",
-    notesFolder,
-  ]);
-  if (!listed.ok) return listed;
-  const fingerprints = new Set<string>();
-  for (const record of splitNul(listed.value)) {
-    const tab = record.indexOf("\t");
-    if (tab < 0) continue;
-    const header = record.slice(0, tab);
-    const path = record.slice(tab + 1);
-    if (!isNotePath(notesFolder, path)) continue;
-    const [mode = "", type = "", blob = ""] = header.split(" ");
-    if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "") continue;
-    const content = await runReadOnlyGit(
-      programs,
-      parsePath,
-      root,
-      "cat-file",
-      ["blob", blob],
-    );
-    if (!content.ok) return content;
-    const parsed = parseChangeNote(
-      path,
-      content.value,
-      settings.changeNotes.affects,
-    );
-    if (parsed.ok) fingerprints.add(canonicalChangeNoteKey(parsed.note));
-  }
-  return { ok: true, value: fingerprints };
+function failCommittedSettings(
+  causeCode:
+    | "DOMAIN_GATES_SETTINGS_MISSING"
+    | "DOMAIN_GATES_SETTINGS_INVALID"
+    | "DOMAIN_GATES_GIT_FAILED",
+  message: string,
+) {
+  return { ok: false as const, causeCode, message };
 }
-
-export async function readBaseNoteFingerprints(
-  programs: ProgramsCapability,
-  parsePath: (value: string) => ParsedPath,
-  root: string,
-  baseOid: string,
-  headOid: string,
-  settings: GateSettings,
-): Promise<GitResult<ReadonlySet<string>>> {
-  const mergeBase = await runReadOnlyGit(
-    programs,
-    parsePath,
-    root,
-    "merge-base",
-    [baseOid, headOid],
-  );
-  if (!mergeBase.ok) return mergeBase;
-  return readTreeNoteFingerprints(
-    programs,
-    parsePath,
-    root,
-    mergeBase.value.trim(),
-    settings,
-  );
-}
-
 export async function readCommittedGateSettings(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
@@ -365,53 +304,40 @@ export async function readCommittedGateSettings(
     GATE_SETTINGS_FILE,
   ]);
   if (!listed.ok)
-    return {
-      ok: false,
-      causeCode: "DOMAIN_GATES_GIT_FAILED",
-      message: listed.problem,
-    };
+    return failCommittedSettings("DOMAIN_GATES_GIT_FAILED", listed.problem);
   const first = splitNul(listed.value)[0];
   if (first === undefined)
-    return {
-      ok: false,
-      causeCode: "DOMAIN_GATES_SETTINGS_MISSING",
-      message: `Missing ${GATE_SETTINGS_FILE} in git HEAD. Repair: commit ${GATE_SETTINGS_FILE} at the repository root declaring changeNotes settings.`,
-    };
+    return failCommittedSettings(
+      "DOMAIN_GATES_SETTINGS_MISSING",
+      `Missing ${GATE_SETTINGS_FILE} in git HEAD. Repair: commit ${GATE_SETTINGS_FILE} at the repository root declaring changeNotes settings.`,
+    );
   const tab = first.indexOf("\t");
   const header = tab >= 0 ? first.slice(0, tab) : "";
   const [mode = "", type = "", blob = ""] = header.split(" ");
   if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "")
-    return {
-      ok: false,
-      causeCode: "DOMAIN_GATES_SETTINGS_INVALID",
-      message: `${GATE_SETTINGS_FILE} must be a plain file in git HEAD (mode ${mode}). Repair: commit a regular UTF-8 JSON file at ${GATE_SETTINGS_FILE}.`,
-    };
+    return failCommittedSettings(
+      "DOMAIN_GATES_SETTINGS_INVALID",
+      `${GATE_SETTINGS_FILE} must be a plain file in git HEAD (mode ${mode}). Repair: commit a regular UTF-8 JSON file at ${GATE_SETTINGS_FILE}.`,
+    );
   const content = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
     "blob",
     blob,
   ]);
   if (!content.ok)
-    return {
-      ok: false,
-      causeCode: "DOMAIN_GATES_GIT_FAILED",
-      message: content.problem,
-    };
+    return failCommittedSettings("DOMAIN_GATES_GIT_FAILED", content.problem);
   if (content.value.includes(replacementCharacter))
-    return {
-      ok: false,
-      causeCode: "DOMAIN_GATES_SETTINGS_INVALID",
-      message: `${GATE_SETTINGS_FILE} in git HEAD is not valid UTF-8 text. Repair: commit ${GATE_SETTINGS_FILE} as valid UTF-8 JSON.`,
-    };
+    return failCommittedSettings(
+      "DOMAIN_GATES_SETTINGS_INVALID",
+      `${GATE_SETTINGS_FILE} in git HEAD is not valid UTF-8 text. Repair: commit ${GATE_SETTINGS_FILE} as valid UTF-8 JSON.`,
+    );
   const parsed = parseGateSettingsText(content.value);
   if (!parsed.ok)
-    return {
-      ok: false,
-      causeCode:
-        parsed.kind === "missing"
-          ? "DOMAIN_GATES_SETTINGS_MISSING"
-          : "DOMAIN_GATES_SETTINGS_INVALID",
-      message: parsed.problem,
-    };
+    return failCommittedSettings(
+      parsed.kind === "missing"
+        ? "DOMAIN_GATES_SETTINGS_MISSING"
+        : "DOMAIN_GATES_SETTINGS_INVALID",
+      parsed.problem,
+    );
   return { ok: true, settings: parsed.settings };
 }
 
@@ -435,6 +361,10 @@ export function isNewlyAddedNote(
   return false;
 }
 
+function failNote(kind: "invalid" | "git", problem: string) {
+  return { ok: false as const, kind, problem };
+}
+
 export async function validateCommittedNote(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
@@ -451,41 +381,36 @@ export async function validateCommittedNote(
 > {
   const notesFolder = settings.changeNotes.folder;
   if (candidate.invalidUtf8Path)
-    return {
-      ok: false,
-      kind: "invalid",
-      problem: `${notesFolder}/: filename is not valid UTF-8 text. Repair: rename the note to a valid UTF-8 ${notesFolder}/YYYY-MM-DD-<kebab-slug>.json filename.`,
-    };
+    return failNote(
+      "invalid",
+      `${notesFolder}/: filename is not valid UTF-8 text. Repair: rename the note to a valid UTF-8 ${notesFolder}/YYYY-MM-DD-<kebab-slug>.json filename.`,
+    );
   const file = candidate.path.slice(notesFolder.length + 1);
   if (file.includes("/") || !isChangeNoteFile(file))
-    return {
-      ok: false,
-      kind: "invalid",
-      problem: `${candidate.path}: filename must match ${notesFolder}/YYYY-MM-DD-<kebab-slug>.json with a valid date. Repair: rename the note to start with a valid ISO date and lowercase kebab-case slug.`,
-    };
+    return failNote(
+      "invalid",
+      `${candidate.path}: filename must match ${notesFolder}/YYYY-MM-DD-<kebab-slug>.json with a valid date. Repair: rename the note to start with a valid ISO date and lowercase kebab-case slug.`,
+    );
   if (!isPlainGitFileMode(candidate.mode))
-    return {
-      ok: false,
-      kind: "invalid",
-      problem: `${candidate.path}: must be a plain file in HEAD (git mode ${candidate.mode}). Repair: replace ${candidate.path} with a regular UTF-8 JSON file.`,
-    };
+    return failNote(
+      "invalid",
+      `${candidate.path}: must be a plain file in HEAD (git mode ${candidate.mode}). Repair: replace ${candidate.path} with a regular UTF-8 JSON file.`,
+    );
   const blob = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
     "blob",
     candidate.blob,
   ]);
-  if (!blob.ok) return { ok: false, kind: "git", problem: blob.problem };
+  if (!blob.ok) return failNote("git", blob.problem);
   if (blob.value.includes(replacementCharacter))
-    return {
-      ok: false,
-      kind: "invalid",
-      problem: `${candidate.path}: is not valid UTF-8 text. Repair: save ${candidate.path} as UTF-8 JSON.`,
-    };
+    return failNote(
+      "invalid",
+      `${candidate.path}: is not valid UTF-8 text. Repair: save ${candidate.path} as UTF-8 JSON.`,
+    );
   const parsed = parseChangeNote(
     candidate.path,
     blob.value,
     settings.changeNotes.affects,
   );
-  if (!parsed.ok)
-    return { ok: false, kind: "invalid", problem: parsed.problem };
+  if (!parsed.ok) return failNote("invalid", parsed.problem);
   return { ok: true, entry: Object.freeze({ file, note: parsed.note }) };
 }

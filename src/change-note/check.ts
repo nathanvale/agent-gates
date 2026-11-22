@@ -7,11 +7,11 @@ import {
   stationWords,
   unchangedSuccess,
 } from "../shared/causes.ts";
+import { readBaseNoteFingerprints } from "../shared/git-fingerprints.ts";
 import {
   diffBaseToHead,
   isNewlyAddedNote,
   isNotePath,
-  readBaseNoteFingerprints,
   readCommittedGateSettings,
   resolveCommitOid,
   validateCommittedNote,
