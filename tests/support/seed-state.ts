@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import {
   changing,
   command,
@@ -7,6 +9,10 @@ import {
   station,
 } from "agent-cli-kernel";
 import { stateAddon } from "agent-cli-kernel/addons/state";
+
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
 
 export async function seedUnfinishedOperation(
   stateRoot: string,
@@ -137,6 +143,9 @@ export async function seedUnfinishedOperation(
       }),
     ],
     run: async (_input, context) => {
+      const realRoot = realpathSync.native(repoRoot);
+      const repoHash = sha256Hex(realRoot);
+      const pathHash = sha256Hex(relativePath);
       const outcome = await state.transaction(
         context.state,
         {
@@ -145,11 +154,15 @@ export async function seedUnfinishedOperation(
             resources: [
               {
                 resource: "change-note",
-                key: `${repoRoot}:${relativePath}`,
+                key: `repo:${repoHash}:${pathHash}`,
               },
             ],
           },
-          facts: { repository: repoRoot, relativePath },
+          revisions: {
+            repositoryHash: repoHash,
+            target: relativePath,
+          },
+          facts: { repository: realRoot, relativePath },
         },
         async (transaction) => {
           await transaction.record(

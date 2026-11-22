@@ -53,6 +53,10 @@ function errorCode(error: unknown): unknown {
   return Reflect.get(Object(error), "code");
 }
 
+function failInvalid(problem: string): SettingsLoadResult {
+  return { ok: false, kind: "invalid", problem };
+}
+
 function isValidGitMarker(directory: string): boolean {
   const marker = join(directory, ".git");
   let stat: ReturnType<typeof lstatSync>;
@@ -61,17 +65,27 @@ function isValidGitMarker(directory: string): boolean {
   } catch {
     return false;
   }
-  if (stat.isDirectory()) return existsSync(join(marker, "HEAD"));
+  if (stat.isDirectory())
+    return (
+      existsSync(join(marker, "HEAD")) &&
+      (existsSync(join(marker, "objects")) ||
+        existsSync(join(marker, "commondir")))
+    );
   if (!stat.isFile()) return false;
   try {
     const content = strictUtf8.decode(readFileSync(marker));
-    const match = /^gitdir:\s*(.+)$/m.exec(content);
-    const gitdir = match?.[1]?.trim();
-    if (gitdir === undefined || gitdir === "") return false;
-    return existsSync(join(resolve(directory, gitdir), "HEAD"));
+    const gitdir = /^gitdir:\s*(.+)$/m.exec(content)?.[1]?.trim();
+    return (
+      Boolean(gitdir) &&
+      existsSync(join(resolve(directory, gitdir ?? ""), "HEAD"))
+    );
   } catch {
     return false;
   }
+}
+
+function failRepo(problem: string): RepositoryResolution {
+  return { ok: false, problem };
 }
 
 export function discoverRepositoryRoot(
@@ -84,22 +98,19 @@ export function discoverRepositoryRoot(
     try {
       stat = lstatSync(candidate);
     } catch {
-      return {
-        ok: false,
-        problem: `Repository folder "${explicitFolder}" does not exist. Repair: pass an existing git repository directory to --repository.`,
-      };
+      return failRepo(
+        `Repository folder "${explicitFolder}" does not exist. Repair: pass an existing git repository directory to --repository.`,
+      );
     }
     if (!stat.isDirectory())
-      return {
-        ok: false,
-        problem: `Repository path "${explicitFolder}" is not a directory. Repair: pass a git repository directory to --repository.`,
-      };
+      return failRepo(
+        `Repository path "${explicitFolder}" is not a directory. Repair: pass a git repository directory to --repository.`,
+      );
     const real = realpathSync.native(candidate);
     if (!isValidGitMarker(real))
-      return {
-        ok: false,
-        problem: `Directory "${explicitFolder}" is not a git repository root. Repair: initialize git there or pass the git repository root to --repository.`,
-      };
+      return failRepo(
+        `Directory "${explicitFolder}" is not a git repository root. Repair: initialize git there or pass the git repository root to --repository.`,
+      );
     return { ok: true, root: real };
   }
   let current = realpathSync.native(resolve(cwd));
@@ -107,10 +118,9 @@ export function discoverRepositoryRoot(
     if (isValidGitMarker(current)) return { ok: true, root: current };
     const parent = dirname(current);
     if (parent === current)
-      return {
-        ok: false,
-        problem: `No git repository root found above ${cwd}. Repair: run inside a git repository or pass --repository <folder>.`,
-      };
+      return failRepo(
+        `No git repository root found above ${cwd}. Repair: run inside a git repository or pass --repository <folder>.`,
+      );
     current = parent;
   }
 }
@@ -412,36 +422,26 @@ export function parseGateSettingsText(rawText: string): SettingsLoadResult {
     parsed = JSON.parse(rawText);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return {
-      ok: false,
-      kind: "invalid",
-      problem: `${GATE_SETTINGS_FILE}: invalid JSON (${reason}). Repair: fix the JSON syntax in ${GATE_SETTINGS_FILE}.`,
-    };
+    return failInvalid(
+      `${GATE_SETTINGS_FILE}: invalid JSON (${reason}). Repair: fix the JSON syntax in ${GATE_SETTINGS_FILE}.`,
+    );
   }
   const top = readObjectFields(parsed, "root", topLevelKeys, ["changeNotes"]);
-  if (!top.ok) return { ok: false, kind: "invalid", problem: top.problem };
-
+  if (!top.ok) return failInvalid(top.problem);
   const changeNotes = parseChangeNotesSection(top.fields.get("changeNotes"));
-  if (!changeNotes.ok)
-    return { ok: false, kind: "invalid", problem: changeNotes.problem };
-
+  if (!changeNotes.ok) return failInvalid(changeNotes.problem);
   let versions: VersionSettings | undefined;
   if (top.fields.has("versions")) {
     const parsedVersions = parseVersionsSection(
       top.fields.get("versions"),
       changeNotes.value.folder,
     );
-    if (!parsedVersions.ok)
-      return { ok: false, kind: "invalid", problem: parsedVersions.problem };
+    if (!parsedVersions.ok) return failInvalid(parsedVersions.problem);
     versions = parsedVersions.value;
   }
-
   return {
     ok: true,
-    settings: Object.freeze({
-      changeNotes: changeNotes.value,
-      versions,
-    }),
+    settings: Object.freeze({ changeNotes: changeNotes.value, versions }),
   };
 }
 
@@ -491,8 +491,8 @@ export function resolveRepositoryAndSettings(
 export function isShippedPath(settings: GateSettings, path: string): boolean {
   return (
     settings.changeNotes.shippedFiles.includes(path) ||
-    settings.changeNotes.shippedFolders.some((folder) =>
-      path.startsWith(`${folder}/`),
+    settings.changeNotes.shippedFolders.some(
+      (folder) => path === folder || path.startsWith(`${folder}/`),
     )
   );
 }

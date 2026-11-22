@@ -45,6 +45,19 @@ const gitOutputLimitBytes = 4 * 1024 * 1024;
 const replacementCharacter = "\uFFFD";
 const commitOidPattern = /^[0-9a-f]{40,64}$/;
 
+const clearedGitEnvNames = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+] as const;
+
 function isPlainGitFileMode(mode: string): boolean {
   return mode === "100644" || mode === "100755";
 }
@@ -66,26 +79,7 @@ function isolatedGitArgs(
   args: readonly string[],
 ): readonly string[] {
   return [
-    "-u",
-    "GIT_DIR",
-    "-u",
-    "GIT_WORK_TREE",
-    "-u",
-    "GIT_INDEX_FILE",
-    "-u",
-    "GIT_OBJECT_DIRECTORY",
-    "-u",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "-u",
-    "GIT_COMMON_DIR",
-    "-u",
-    "GIT_CONFIG_COUNT",
-    "-u",
-    "GIT_CONFIG_PARAMETERS",
-    "-u",
-    "GIT_CONFIG_GLOBAL",
-    "-u",
-    "GIT_CONFIG_SYSTEM",
+    ...clearedGitEnvNames.flatMap((name) => ["-u", name]),
     "GIT_OPTIONAL_LOCKS=0",
     "GIT_NO_LAZY_FETCH=1",
     "GIT_TERMINAL_PROMPT=0",
@@ -160,31 +154,10 @@ function parseOneDiffRecord(
       ok: false,
       problem: `git diff ${range} returned an incomplete record.`,
     };
-  if (status.startsWith("R") || status.startsWith("C")) {
-    const oldPath = fields[index + 1];
-    const newPath = fields[index + 2];
-    if (oldPath === undefined || newPath === undefined)
-      return {
-        ok: false,
-        problem: `git diff ${range} returned an incomplete rename record.`,
-      };
-    return {
-      ok: true,
-      value: {
-        entry: {
-          mode,
-          blob,
-          status,
-          oldPath,
-          path: newPath,
-          invalidUtf8Path: newPath.includes(replacementCharacter),
-        },
-        nextIndex: index + 3,
-      },
-    };
-  }
-  const rawPath = fields[index + 1];
-  if (rawPath === undefined)
+  const isPair = status.startsWith("R") || status.startsWith("C");
+  const oldPath = isPair ? fields[index + 1] : undefined;
+  const path = isPair ? fields[index + 2] : fields[index + 1];
+  if ((isPair && oldPath === undefined) || path === undefined)
     return {
       ok: false,
       problem: `git diff ${range} returned an incomplete record.`,
@@ -196,11 +169,11 @@ function parseOneDiffRecord(
         mode,
         blob,
         status,
-        oldPath: undefined,
-        path: rawPath,
-        invalidUtf8Path: rawPath.includes(replacementCharacter),
+        oldPath,
+        path,
+        invalidUtf8Path: path.includes(replacementCharacter),
       },
-      nextIndex: index + 2,
+      nextIndex: index + (isPair ? 3 : 2),
     },
   };
 }
@@ -282,6 +255,46 @@ export async function diffBaseToHead(
   };
 }
 
+async function collectFolderNoteFingerprints(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
+  commitOid: string,
+  notesFolder: string,
+  allowedAffects: ReadonlySet<string>,
+  fingerprints: Set<string>,
+): Promise<GitResult<undefined>> {
+  const listed = await runReadOnlyGit(programs, parsePath, root, "ls-tree", [
+    "-r",
+    "-z",
+    "--full-tree",
+    commitOid,
+    "--",
+    notesFolder,
+  ]);
+  if (!listed.ok) return listed;
+  for (const record of splitNul(listed.value)) {
+    const tab = record.indexOf("\t");
+    if (tab < 0) continue;
+    const header = record.slice(0, tab);
+    const path = record.slice(tab + 1);
+    if (!isNotePath(notesFolder, path)) continue;
+    const [mode = "", type = "", blob = ""] = header.split(" ");
+    if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "") continue;
+    const content = await runReadOnlyGit(
+      programs,
+      parsePath,
+      root,
+      "cat-file",
+      ["blob", blob],
+    );
+    if (!content.ok) return content;
+    const parsed = parseChangeNote(path, content.value, allowedAffects);
+    if (parsed.ok) fingerprints.add(canonicalChangeNoteKey(parsed.note));
+  }
+  return { ok: true, value: undefined };
+}
+
 export async function readBaseNoteFingerprints(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
@@ -299,41 +312,55 @@ export async function readBaseNoteFingerprints(
   );
   if (!mergeBase.ok) return mergeBase;
   const mergeBaseOid = mergeBase.value.trim();
-  const notesFolder = settings.changeNotes.folder;
-  const listed = await runReadOnlyGit(programs, parsePath, root, "ls-tree", [
-    "-r",
-    "-z",
-    "--full-tree",
-    mergeBaseOid,
-    "--",
-    notesFolder,
-  ]);
-  if (!listed.ok) return listed;
   const fingerprints = new Set<string>();
-  for (const record of splitNul(listed.value)) {
-    const tab = record.indexOf("\t");
-    if (tab < 0) continue;
-    const header = record.slice(0, tab);
-    const path = record.slice(tab + 1);
-    if (!isNotePath(notesFolder, path)) continue;
-    const [mode = "", type = "", blob = ""] = header.split(" ");
-    if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "") continue;
-    const content = await runReadOnlyGit(
-      programs,
-      parsePath,
-      root,
-      "cat-file",
-      ["blob", blob],
-    );
-    if (!content.ok) return content;
-    const parsed = parseChangeNote(
-      path,
-      content.value,
-      settings.changeNotes.affects,
-    );
-    if (parsed.ok) fingerprints.add(canonicalChangeNoteKey(parsed.note));
+  const headScan = await collectFolderNoteFingerprints(
+    programs,
+    parsePath,
+    root,
+    mergeBaseOid,
+    settings.changeNotes.folder,
+    settings.changeNotes.affects,
+    fingerprints,
+  );
+  if (!headScan.ok) return headScan;
+  const baseSettings = await readCommittedGateSettings(
+    programs,
+    parsePath,
+    root,
+    mergeBaseOid,
+  );
+  if (!baseSettings.ok && baseSettings.causeCode === "DOMAIN_GATES_GIT_FAILED")
+    return { ok: false, problem: baseSettings.message };
+  if (baseSettings.ok) {
+    const sameFolder =
+      baseSettings.settings.changeNotes.folder === settings.changeNotes.folder;
+    const sameAffects =
+      [...baseSettings.settings.changeNotes.affects].sort().join(",") ===
+      [...settings.changeNotes.affects].sort().join(",");
+    if (!sameFolder || !sameAffects) {
+      const baseScan = await collectFolderNoteFingerprints(
+        programs,
+        parsePath,
+        root,
+        mergeBaseOid,
+        baseSettings.settings.changeNotes.folder,
+        baseSettings.settings.changeNotes.affects,
+        fingerprints,
+      );
+      if (!baseScan.ok) return baseScan;
+    }
   }
   return { ok: true, value: fingerprints };
+}
+
+function failCommittedSettings(
+  causeCode:
+    | "DOMAIN_GATES_SETTINGS_MISSING"
+    | "DOMAIN_GATES_SETTINGS_INVALID"
+    | "DOMAIN_GATES_GIT_FAILED",
+  message: string,
+) {
+  return { ok: false as const, causeCode, message };
 }
 
 export async function readCommittedGateSettings(
@@ -360,54 +387,40 @@ export async function readCommittedGateSettings(
     GATE_SETTINGS_FILE,
   ]);
   if (!listed.ok)
-    return {
-      ok: false,
-      causeCode: "DOMAIN_GATES_GIT_FAILED",
-      message: listed.problem,
-    };
-  const records = splitNul(listed.value);
-  const first = records[0];
+    return failCommittedSettings("DOMAIN_GATES_GIT_FAILED", listed.problem);
+  const first = splitNul(listed.value)[0];
   if (first === undefined)
-    return {
-      ok: false,
-      causeCode: "DOMAIN_GATES_SETTINGS_MISSING",
-      message: `Missing ${GATE_SETTINGS_FILE} in git HEAD. Repair: commit ${GATE_SETTINGS_FILE} at the repository root declaring changeNotes settings.`,
-    };
+    return failCommittedSettings(
+      "DOMAIN_GATES_SETTINGS_MISSING",
+      `Missing ${GATE_SETTINGS_FILE} in git HEAD. Repair: commit ${GATE_SETTINGS_FILE} at the repository root declaring changeNotes settings.`,
+    );
   const tab = first.indexOf("\t");
   const header = tab >= 0 ? first.slice(0, tab) : "";
   const [mode = "", type = "", blob = ""] = header.split(" ");
   if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "")
-    return {
-      ok: false,
-      causeCode: "DOMAIN_GATES_SETTINGS_INVALID",
-      message: `${GATE_SETTINGS_FILE} must be a plain file in git HEAD (mode ${mode}). Repair: commit a regular UTF-8 JSON file at ${GATE_SETTINGS_FILE}.`,
-    };
+    return failCommittedSettings(
+      "DOMAIN_GATES_SETTINGS_INVALID",
+      `${GATE_SETTINGS_FILE} must be a plain file in git HEAD (mode ${mode}). Repair: commit a regular UTF-8 JSON file at ${GATE_SETTINGS_FILE}.`,
+    );
   const content = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
     "blob",
     blob,
   ]);
   if (!content.ok)
-    return {
-      ok: false,
-      causeCode: "DOMAIN_GATES_GIT_FAILED",
-      message: content.problem,
-    };
+    return failCommittedSettings("DOMAIN_GATES_GIT_FAILED", content.problem);
   if (content.value.includes(replacementCharacter))
-    return {
-      ok: false,
-      causeCode: "DOMAIN_GATES_SETTINGS_INVALID",
-      message: `${GATE_SETTINGS_FILE} in git HEAD is not valid UTF-8 text. Repair: commit ${GATE_SETTINGS_FILE} as valid UTF-8 JSON.`,
-    };
+    return failCommittedSettings(
+      "DOMAIN_GATES_SETTINGS_INVALID",
+      `${GATE_SETTINGS_FILE} in git HEAD is not valid UTF-8 text. Repair: commit ${GATE_SETTINGS_FILE} as valid UTF-8 JSON.`,
+    );
   const parsed = parseGateSettingsText(content.value);
   if (!parsed.ok)
-    return {
-      ok: false,
-      causeCode:
-        parsed.kind === "missing"
-          ? "DOMAIN_GATES_SETTINGS_MISSING"
-          : "DOMAIN_GATES_SETTINGS_INVALID",
-      message: parsed.problem,
-    };
+    return failCommittedSettings(
+      parsed.kind === "missing"
+        ? "DOMAIN_GATES_SETTINGS_MISSING"
+        : "DOMAIN_GATES_SETTINGS_INVALID",
+      parsed.problem,
+    );
   return { ok: true, settings: parsed.settings };
 }
 
