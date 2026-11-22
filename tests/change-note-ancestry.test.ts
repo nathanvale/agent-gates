@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { copyFileSync } from "node:fs";
+import { copyFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import {
   commitFiles,
@@ -276,6 +276,41 @@ describe("Per-commit ancestry tracking (copy-then-edit, merged renames, destinat
     const afterSameCommit = checkMain(repo, stateDir);
     expect(afterSameCommit.exitCode).toBe(3);
     expect(afterSameCommit.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
+    });
+  });
+
+  test("P1 (r9): Git type-change T (regular -> symlink -> edited regular + reformatted copy) still fails R8", () => {
+    const { repo, stateDir } = makeBaseRepo();
+    git(repo, "checkout", "-b", "type-change-t");
+    const targetPath = join(repo, "change-notes/2026-11-20-old.json");
+    rmSync(targetPath);
+    symlinkSync("README.md", targetPath);
+    git(repo, "add", "change-notes/2026-11-20-old.json");
+    git(repo, "commit", "-q", "-m", "replace old note with symlink (T)");
+
+    rmSync(targetPath);
+    const editedPayload = {
+      kind: "fixed",
+      breaking: false,
+      affects: ["cli"],
+      summary: "Restored after symlink type change with new summary.",
+      action: null,
+    };
+    commitFiles(
+      repo,
+      "restore regular file with edited content and copy (T + A)",
+      {
+        "change-notes/2026-11-20-old.json": `${JSON.stringify(editedPayload, null, 2)}\n`,
+        "change-notes/2026-11-22-after-t-copy.json":
+          JSON.stringify(editedPayload),
+        "src/app.ts": "export const v = 2;\n",
+      },
+    );
+
+    const checked = checkMain(repo, stateDir);
+    expect(checked.exitCode).toBe(3);
+    expect(checked.envelope).toMatchObject({
       result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
     });
   });
