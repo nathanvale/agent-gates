@@ -28,6 +28,7 @@ const readOnlySubcommands = new Set([
   "diff",
   "cat-file",
   "rev-parse",
+  "log",
 ]);
 
 afterEach(() => {

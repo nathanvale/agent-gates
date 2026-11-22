@@ -43,14 +43,24 @@ async function spawnGatesAsync(
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  const envelope: unknown =
-    argv.includes("--json") && stdout.trim() !== "" ? JSON.parse(stdout) : null;
-  return { exitCode, stdout, stderr, envelope };
+  const timer = setTimeout(() => {
+    child.kill();
+  }, 20_000);
+  try {
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    const envelope: unknown =
+      argv.includes("--json") && stdout.trim() !== ""
+        ? JSON.parse(stdout)
+        : null;
+    return { exitCode, stdout, stderr, envelope };
+  } finally {
+    clearTimeout(timer);
+    if (child.exitCode === null) child.kill();
+  }
 }
 
 describe("PR 2 hardening tests for versions (R16, R21, concurrency, discoverability)", () => {
@@ -119,6 +129,38 @@ describe("PR 2 hardening tests for versions (R16, R21, concurrency, discoverabil
     );
     expect(afterCopy.exitCode).toBe(3);
     expect(afterCopy.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_NOTHING_TO_PREPARE" },
+    });
+
+    git(
+      repo,
+      "mv",
+      "change-notes/2026-11-22-copied-old.json",
+      "change-notes/2026-11-22-step1-rename.json",
+    );
+    git(repo, "commit", "-q", "-m", "step 1 rename copied pre-tag note");
+    commitFiles(repo, "step 2 minify and tweak punctuation", {
+      "change-notes/2026-11-22-step1-rename.json": JSON.stringify({
+        ...initialNote,
+        summary: "Released before tag!",
+      }),
+    });
+    const afterTwoStep = runGatesCli(
+      [
+        "version",
+        "preview",
+        "--lead",
+        "Two-step rename and edit must not trigger.",
+        "--date",
+        "2026-11-22",
+        "--repository",
+        repo,
+        "--json",
+      ],
+      { cwd: repo, stateDir },
+    );
+    expect(afterTwoStep.exitCode).toBe(3);
+    expect(afterTwoStep.envelope).toMatchObject({
       result: { causeCode: "DOMAIN_GATES_NOTHING_TO_PREPARE" },
     });
   });
