@@ -61,6 +61,7 @@ test("rumdl-notes.toml resolves the intended effective configuration when extend
   expect(effective.stdout).not.toContain('"MD013"');
   expect(effective.stdout).not.toContain('"MD041"');
   expect(effective.stdout).not.toContain('"MD043"');
+  expect(effective.stdout).not.toContain('"MD051"');
   expect(effective.stdout).not.toContain('"MD071"');
   expect(effective.stdout).not.toContain('"MD072"');
 });
@@ -80,10 +81,12 @@ test("rumdl-docs.toml resolves the intended effective configuration when extende
   expect(effective.stdout).toContain("respect_gitignore = true");
   expect(effective.stdout).toContain("front-matter-title = false");
   expect(effective.stdout).toContain('front-matter-title = ""');
+  expect(effective.stdout).toContain('"MD051"');
   expect(effective.stdout).not.toContain('"MD013"');
   expect(effective.stdout).not.toContain('"MD041"');
   expect(effective.stdout).not.toContain('"MD043"');
   expect(effective.stdout).not.toContain('"MD071"');
+  expect(effective.stdout).not.toContain('"MD072"');
 });
 
 test("rumdl-notes.toml passes clean Obsidian notes and templates and refuses planted mistakes", () => {
@@ -96,9 +99,9 @@ tags: [note]
 
 # Ada Lovelace
 
-## Context
+## Context and Details
 
-Ada Lovelace is a clean note with prose longer than eighty characters and a [[Wikilink]] reference.
+Ada Lovelace is a clean note with prose longer than eighty characters, a [[Wikilink]], and an Obsidian heading link [Section](#Context%20and%20Details).
 `,
     "templates/person.md": `---
 title: "{{title}}"
