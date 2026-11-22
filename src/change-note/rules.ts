@@ -101,6 +101,7 @@ function parseJsonObject(file: string, raw: string): Parsed<object> {
 function readJsonFields(
   file: string,
   raw: string,
+  allowedAffects: ReadonlySet<string>,
 ): Parsed<Map<string, unknown>> {
   const objectResult = parseJsonObject(file, raw);
   if (!objectResult.ok) return objectResult;
@@ -111,6 +112,12 @@ function readJsonFields(
       `${file}: unknown field "${unknown}". Repair: keep only ${fieldsList.join(", ")}.`,
     );
   const missing = fieldsList.find((key) => !fields.has(key));
+  if (missing === "affects") {
+    const allowedList = [...allowedAffects].sort(compareText).join(", ");
+    return fail(
+      `${file}: missing required field "affects". Repair: add "affects" using one or more of ${allowedList} (or [] when kind is "none").`,
+    );
+  }
   if (missing !== undefined)
     return fail(
       `${file}: missing required field "${missing}". Repair: set ${fieldsList.join(", ")}.`,
@@ -202,7 +209,7 @@ export function parseChangeNote(
 ):
   | { readonly ok: true; readonly note: ChangeNote }
   | { readonly ok: false; readonly problem: string } {
-  const fieldsResult = readJsonFields(file, raw);
+  const fieldsResult = readJsonFields(file, raw, allowedAffects);
   if (!fieldsResult.ok) return fieldsResult;
   const fields = fieldsResult.value;
   const header = parseKindAndBreaking(file, fields);

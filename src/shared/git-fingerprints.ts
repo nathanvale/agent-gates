@@ -4,16 +4,21 @@ import {
   parseChangeNote,
 } from "../change-note/rules.ts";
 import {
+  type GitResult,
   isNotePath,
   isPlainGitFileMode,
   readCommittedGateSettings,
   runReadOnlyGit,
   splitNul,
-  type GitResult,
 } from "./git-read.ts";
 import type { GateSettings } from "./settings.ts";
 
-async function collectFolderNoteFingerprints(
+export type BaseNoteHistory = {
+  readonly fingerprints: ReadonlySet<string>;
+  readonly ancestorPaths: ReadonlySet<string>;
+};
+
+async function collectFolderNotes(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
@@ -21,6 +26,7 @@ async function collectFolderNoteFingerprints(
   notesFolder: string,
   allowedAffects: ReadonlySet<string>,
   fingerprints: Set<string>,
+  paths: Set<string>,
 ): Promise<GitResult<undefined>> {
   const listed = await runReadOnlyGit(programs, parsePath, root, "ls-tree", [
     "-r",
@@ -38,6 +44,7 @@ async function collectFolderNoteFingerprints(
     if (!isNotePath(notesFolder, path)) continue;
     const [mode = "", type = "", blob = ""] = record.slice(0, tab).split(" ");
     if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "") continue;
+    paths.add(path);
     const content = await runReadOnlyGit(
       programs,
       parsePath,
@@ -52,15 +59,77 @@ async function collectFolderNoteFingerprints(
   return { ok: true, value: undefined };
 }
 
-export async function readTreeNoteFingerprints(
+function advanceRenameAncestors(
+  rawLogOutput: string,
+  ancestorPaths: Set<string>,
+): void {
+  const fields = splitNul(rawLogOutput);
+  let index = 0;
+  while (index < fields.length) {
+    const token = fields[index] ?? "";
+    const trimmed = token.startsWith("\n") ? token.slice(1) : token;
+    if (!trimmed.startsWith(":")) {
+      index += 1;
+      continue;
+    }
+    const status = trimmed.split(" ")[4] ?? "";
+    if (status.startsWith("R") || status.startsWith("C")) {
+      const oldPath = fields[index + 1];
+      const newPath = fields[index + 2];
+      if (
+        oldPath !== undefined &&
+        newPath !== undefined &&
+        ancestorPaths.has(oldPath)
+      )
+        ancestorPaths.add(newPath);
+      index += 3;
+      continue;
+    }
+    index += 2;
+  }
+}
+
+async function trackRenameAncestors(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
+  fromOid: string,
+  toOid: string,
+  ancestorPaths: Set<string>,
+): Promise<GitResult<undefined>> {
+  if (ancestorPaths.size === 0) return { ok: true, value: undefined };
+  const log = await runReadOnlyGit(programs, parsePath, root, "log", [
+    "-m",
+    "--first-parent",
+    "--reverse",
+    "--raw",
+    "--no-abbrev",
+    "--find-renames",
+    "--find-copies",
+    "--ignore-submodules=none",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-relative",
+    "-z",
+    "--format=",
+    `${fromOid}..${toOid}`,
+  ]);
+  if (!log.ok) return log;
+  advanceRenameAncestors(log.value, ancestorPaths);
+  return { ok: true, value: undefined };
+}
+
+export async function readTreeNoteHistory(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
   treeCommitOid: string,
+  headOid: string,
   settings: GateSettings,
-): Promise<GitResult<ReadonlySet<string>>> {
+): Promise<GitResult<BaseNoteHistory>> {
   const fingerprints = new Set<string>();
-  const headScan = await collectFolderNoteFingerprints(
+  const ancestorPaths = new Set<string>();
+  const headScan = await collectFolderNotes(
     programs,
     parsePath,
     root,
@@ -68,6 +137,7 @@ export async function readTreeNoteFingerprints(
     settings.changeNotes.folder,
     settings.changeNotes.affects,
     fingerprints,
+    ancestorPaths,
   );
   if (!headScan.ok) return headScan;
   const priorSettings = await readCommittedGateSettings(
@@ -88,7 +158,7 @@ export async function readTreeNoteFingerprints(
       [...priorSettings.settings.changeNotes.affects].sort().join(",") ===
       [...settings.changeNotes.affects].sort().join(",");
     if (!sameFolder || !sameAffects) {
-      const priorScan = await collectFolderNoteFingerprints(
+      const priorScan = await collectFolderNotes(
         programs,
         parsePath,
         root,
@@ -96,21 +166,31 @@ export async function readTreeNoteFingerprints(
         priorSettings.settings.changeNotes.folder,
         priorSettings.settings.changeNotes.affects,
         fingerprints,
+        ancestorPaths,
       );
       if (!priorScan.ok) return priorScan;
     }
   }
-  return { ok: true, value: fingerprints };
+  const tracked = await trackRenameAncestors(
+    programs,
+    parsePath,
+    root,
+    treeCommitOid,
+    headOid,
+    ancestorPaths,
+  );
+  if (!tracked.ok) return tracked;
+  return { ok: true, value: { fingerprints, ancestorPaths } };
 }
 
-export async function readBaseNoteFingerprints(
+export async function readBaseNoteHistory(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
   baseOid: string,
   headOid: string,
   settings: GateSettings,
-): Promise<GitResult<ReadonlySet<string>>> {
+): Promise<GitResult<BaseNoteHistory>> {
   const mergeBase = await runReadOnlyGit(
     programs,
     parsePath,
@@ -119,11 +199,12 @@ export async function readBaseNoteFingerprints(
     [baseOid, headOid],
   );
   if (!mergeBase.ok) return mergeBase;
-  return readTreeNoteFingerprints(
+  return readTreeNoteHistory(
     programs,
     parsePath,
     root,
     mergeBase.value.trim(),
+    headOid,
     settings,
   );
 }

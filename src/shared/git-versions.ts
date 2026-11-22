@@ -8,7 +8,10 @@ import {
   compareRepositoryVersions,
   parseRepositoryVersion,
 } from "../version/rules.ts";
-import { readTreeNoteFingerprints } from "./git-fingerprints.ts";
+import {
+  type BaseNoteHistory,
+  readTreeNoteHistory,
+} from "./git-fingerprints.ts";
 import {
   type BlobCandidate,
   diffResolvedRange,
@@ -133,7 +136,7 @@ async function candidatesAtCommit(
 
 type NoteCandidateSet = {
   readonly candidates: readonly BlobCandidate[];
-  readonly priorFingerprints: ReadonlySet<string> | undefined;
+  readonly priorHistory: BaseNoteHistory | undefined;
 };
 
 type NoteCandidateResult =
@@ -179,19 +182,20 @@ async function candidatesSinceTag(
   if (candidates.length === 0)
     return {
       ok: true,
-      value: { candidates, priorFingerprints: undefined },
+      value: { candidates, priorHistory: undefined },
     };
-  const prior = await readTreeNoteFingerprints(
+  const prior = await readTreeNoteHistory(
     programs,
     parsePath,
     root,
     tagOid.value,
+    headOid,
     settings,
   );
   if (!prior.ok) return { ok: false, kind: "git", problem: prior.problem };
   return {
     ok: true,
-    value: { candidates, priorFingerprints: prior.value },
+    value: { candidates, priorHistory: prior.value },
   };
 }
 
@@ -225,7 +229,7 @@ export async function readChangeNotesSinceTag(
                   ok: true,
                   value: {
                     candidates: result.candidates,
-                    priorFingerprints: undefined,
+                    priorHistory: undefined,
                   },
                 }
               : result,
@@ -239,7 +243,7 @@ export async function readChangeNotesSinceTag(
           headOid,
         );
   if (!collected.ok) return collected;
-  const { candidates, priorFingerprints } = collected.value;
+  const { candidates, priorHistory } = collected.value;
   const entries: ChangeNoteEntry[] = [];
   for (const candidate of candidates) {
     const validated = await validateCommittedNote(
@@ -251,8 +255,11 @@ export async function readChangeNotesSinceTag(
     );
     if (!validated.ok) return validated;
     if (
-      priorFingerprints !== undefined &&
-      priorFingerprints.has(canonicalChangeNoteKey(validated.entry.note))
+      priorHistory !== undefined &&
+      (priorHistory.ancestorPaths.has(candidate.path) ||
+        priorHistory.fingerprints.has(
+          canonicalChangeNoteKey(validated.entry.note),
+        ))
     )
       continue;
     entries.push(validated.entry);

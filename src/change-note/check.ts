@@ -7,7 +7,7 @@ import {
   stationWords,
   unchangedSuccess,
 } from "../shared/causes.ts";
-import { readBaseNoteFingerprints } from "../shared/git-fingerprints.ts";
+import { readBaseNoteHistory } from "../shared/git-fingerprints.ts";
 import {
   diffBaseToHead,
   isNewlyAddedNote,
@@ -326,7 +326,7 @@ export function changeNoteCheckCommand(
 
       let addedNotes = candidateAddedNotes;
       if (candidateAddedNotes.length > 0) {
-        const baseFingerprints = await readBaseNoteFingerprints(
+        const baseHistory = await readBaseNoteHistory(
           context.programs,
           parsePath,
           repoResult.root,
@@ -334,12 +334,12 @@ export function changeNoteCheckCommand(
           headOid.value,
           settings,
         );
-        if (!baseFingerprints.ok)
+        if (!baseHistory.ok)
           return context.result(
             { commandIdentity: identity, causeCode: "DOMAIN_GATES_GIT_FAILED" },
             {
               message: ensureRepair(
-                baseFingerprints.problem,
+                baseHistory.problem,
                 "ensure git history between the base revision and HEAD is readable and run again.",
               ),
               data: null,
@@ -350,7 +350,8 @@ export function changeNoteCheckCommand(
           const fingerprint = validated.fingerprints.get(path);
           return (
             fingerprint !== undefined &&
-            !baseFingerprints.value.has(fingerprint)
+            !baseHistory.value.ancestorPaths.has(path) &&
+            !baseHistory.value.fingerprints.has(fingerprint)
           );
         });
       }

@@ -10,6 +10,7 @@ import {
   repositoryScopeId,
   stationWords,
   targetScopeKey,
+  transactionRefusal,
   unresolvedRepair,
 } from "../shared/causes.ts";
 import {
@@ -345,16 +346,11 @@ export function versionPrepareCommand(
         );
 
       if (outcome.kind !== "ran") {
-        const causeCode =
-          outcome.kind === "held-lock"
-            ? "DOMAIN_GATES_CHANGE_HELD"
-            : outcome.kind === "unresolved-case"
-              ? "DOMAIN_GATES_CHANGE_UNRESOLVED"
-              : "DOMAIN_GATES_STATE_UNAVAILABLE";
+        const refusal = transactionRefusal(outcome.kind, "version prepare");
         return context.result(
-          { commandIdentity: prepareIdentity, causeCode },
+          { commandIdentity: prepareIdentity, causeCode: refusal.causeCode },
           {
-            message: `Did not write ${account.relativePath}: ${outcome.kind}.`,
+            message: `Did not write ${account.relativePath}: ${outcome.kind}. Repair: ${refusal.repair}`,
             data: null,
             effects: nothingChanged,
           },
@@ -367,7 +363,7 @@ export function versionPrepareCommand(
             causeCode: "DOMAIN_GATES_STATE_UNAVAILABLE",
           },
           {
-            message: `Did not write ${account.relativePath}.`,
+            message: `Did not write ${account.relativePath}. Repair: inspect the state folder named by AGENT_GATES_STATE and retry.`,
             data: null,
             effects: nothingChanged,
           },
@@ -379,7 +375,7 @@ export function versionPrepareCommand(
             causeCode: "DOMAIN_GATES_WRITE_UNCONFIRMED",
           },
           {
-            message: `Write of ${account.relativePath} could not be confirmed.`,
+            message: `Write of ${account.relativePath} could not be confirmed. Repair: ${unresolvedRepair}`,
             data: null,
             transaction: outcome.proof,
           },

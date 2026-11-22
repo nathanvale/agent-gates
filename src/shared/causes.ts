@@ -86,4 +86,22 @@ export const pendingStep = {
 } as const;
 
 export const unresolvedRepair =
-  "Run pending to see the operation id and target path, then check that file by hand. That target stays blocked until a qualified close exists.";
+  "Run pending (passing the same --repository if outside the target repository) to see the operation id and target path, then check that file by hand. That target stays blocked until a qualified close exists.";
+
+export function transactionRefusal(kind: string, commandLabel: string) {
+  if (kind === "held-lock")
+    return {
+      causeCode: "DOMAIN_GATES_CHANGE_HELD" as const,
+      repair: `Wait for that write to finish, then run ${commandLabel} again.`,
+    };
+  if (kind === "unresolved-case")
+    return {
+      causeCode: "DOMAIN_GATES_CHANGE_UNRESOLVED" as const,
+      repair: unresolvedRepair,
+    };
+  return {
+    causeCode: "DOMAIN_GATES_STATE_UNAVAILABLE" as const,
+    repair:
+      "Inspect the state folder named by AGENT_GATES_STATE and repair it before retrying.",
+  };
+}

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
 import { programDetails } from "agent-cli-kernel/addons/programs";
 import {
@@ -17,7 +18,8 @@ type GitReadCommand =
   | "cat-file"
   | "ls-tree"
   | "rev-parse"
-  | "merge-base";
+  | "merge-base"
+  | "log";
 
 type DiffEntry = {
   readonly mode: string;
@@ -57,6 +59,24 @@ const clearedGitEnvNames = [
   "GIT_CONFIG_GLOBAL",
   "GIT_CONFIG_SYSTEM",
 ] as const;
+
+const utf8BomBytes = Buffer.from([0xef, 0xbb, 0xbf]);
+
+function gitBlobHash(algorithm: "sha1" | "sha256", bytes: Buffer): string {
+  return createHash(algorithm)
+    .update(`blob ${String(bytes.byteLength)}\0`)
+    .update(bytes)
+    .digest("hex");
+}
+
+function hasInvalidUtf8Decoding(blobOid: string, text: string): boolean {
+  if (!text.includes(replacementCharacter)) return false;
+  const algorithm = blobOid.length === 64 ? "sha256" : "sha1";
+  const encoded = Buffer.from(text, "utf8");
+  if (gitBlobHash(algorithm, encoded) === blobOid) return false;
+  const withBom = Buffer.concat([utf8BomBytes, encoded]);
+  return gitBlobHash(algorithm, withBom) !== blobOid;
+}
 
 export function isPlainGitFileMode(mode: string): boolean {
   return mode === "100644" || mode === "100755";
@@ -280,6 +300,7 @@ function failCommittedSettings(
 ) {
   return { ok: false as const, causeCode, message };
 }
+
 export async function readCommittedGateSettings(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
@@ -325,7 +346,7 @@ export async function readCommittedGateSettings(
   ]);
   if (!content.ok)
     return failCommittedSettings("DOMAIN_GATES_GIT_FAILED", content.problem);
-  if (content.value.includes(replacementCharacter))
+  if (hasInvalidUtf8Decoding(blob, content.value))
     return failCommittedSettings(
       "DOMAIN_GATES_SETTINGS_INVALID",
       `${GATE_SETTINGS_FILE} in git HEAD is not valid UTF-8 text. Repair: commit ${GATE_SETTINGS_FILE} as valid UTF-8 JSON.`,
@@ -361,10 +382,6 @@ export function isNewlyAddedNote(
   return false;
 }
 
-function failNote(kind: "invalid" | "git", problem: string) {
-  return { ok: false as const, kind, problem };
-}
-
 export async function validateCommittedNote(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
@@ -381,36 +398,41 @@ export async function validateCommittedNote(
 > {
   const notesFolder = settings.changeNotes.folder;
   if (candidate.invalidUtf8Path)
-    return failNote(
-      "invalid",
-      `${notesFolder}/: filename is not valid UTF-8 text. Repair: rename the note to a valid UTF-8 ${notesFolder}/YYYY-MM-DD-<kebab-slug>.json filename.`,
-    );
+    return {
+      ok: false,
+      kind: "invalid",
+      problem: `${notesFolder}/: filename is not valid UTF-8 text. Repair: rename the note to a valid UTF-8 ${notesFolder}/YYYY-MM-DD-<kebab-slug>.json filename.`,
+    };
   const file = candidate.path.slice(notesFolder.length + 1);
   if (file.includes("/") || !isChangeNoteFile(file))
-    return failNote(
-      "invalid",
-      `${candidate.path}: filename must match ${notesFolder}/YYYY-MM-DD-<kebab-slug>.json with a valid date. Repair: rename the note to start with a valid ISO date and lowercase kebab-case slug.`,
-    );
+    return {
+      ok: false,
+      kind: "invalid",
+      problem: `${candidate.path}: filename must match ${notesFolder}/YYYY-MM-DD-<kebab-slug>.json with a valid date. Repair: rename the note to start with a valid ISO date and lowercase kebab-case slug.`,
+    };
   if (!isPlainGitFileMode(candidate.mode))
-    return failNote(
-      "invalid",
-      `${candidate.path}: must be a plain file in HEAD (git mode ${candidate.mode}). Repair: replace ${candidate.path} with a regular UTF-8 JSON file.`,
-    );
+    return {
+      ok: false,
+      kind: "invalid",
+      problem: `${candidate.path}: must be a plain file in HEAD (git mode ${candidate.mode}). Repair: replace ${candidate.path} with a regular UTF-8 JSON file.`,
+    };
   const blob = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
     "blob",
     candidate.blob,
   ]);
-  if (!blob.ok) return failNote("git", blob.problem);
-  if (blob.value.includes(replacementCharacter))
-    return failNote(
-      "invalid",
-      `${candidate.path}: is not valid UTF-8 text. Repair: save ${candidate.path} as UTF-8 JSON.`,
-    );
+  if (!blob.ok) return { ok: false, kind: "git", problem: blob.problem };
+  if (hasInvalidUtf8Decoding(candidate.blob, blob.value))
+    return {
+      ok: false,
+      kind: "invalid",
+      problem: `${candidate.path}: is not valid UTF-8 text. Repair: save ${candidate.path} as UTF-8 JSON.`,
+    };
   const parsed = parseChangeNote(
     candidate.path,
     blob.value,
     settings.changeNotes.affects,
   );
-  if (!parsed.ok) return failNote("invalid", parsed.problem);
+  if (!parsed.ok)
+    return { ok: false, kind: "invalid", problem: parsed.problem };
   return { ok: true, entry: Object.freeze({ file, note: parsed.note }) };
 }
