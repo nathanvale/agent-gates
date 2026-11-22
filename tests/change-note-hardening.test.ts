@@ -146,44 +146,53 @@ describe("PR 1 hardening and catch tests (P0-1, P1-1..P1-5)", () => {
         affects: ["cli"],
       },
     });
+    const addArgv = (summary: string) => [
+      "change-note",
+      "add",
+      "--slug",
+      "race-slug",
+      "--kind",
+      "added",
+      "--affects",
+      "cli",
+      "--summary",
+      summary,
+      "--date",
+      "2026-11-22",
+      "--repository",
+      repo,
+      "--json",
+    ];
     const spawnAdd = (summary: string) =>
-      Bun.spawn(
-        [
-          process.execPath,
-          "run",
-          cliPath,
-          "change-note",
-          "add",
-          "--slug",
-          "race-slug",
-          "--kind",
-          "added",
-          "--affects",
-          "cli",
-          "--summary",
-          summary,
-          "--date",
-          "2026-11-22",
-          "--repository",
-          repo,
-          "--json",
-        ],
-        {
-          cwd: repo,
-          env: { ...process.env, AGENT_GATES_STATE: stateDir },
-          stdout: "pipe",
-          stderr: "pipe",
-        },
-      );
+      Bun.spawn([process.execPath, "run", cliPath, ...addArgv(summary)], {
+        cwd: repo,
+        env: { ...process.env, AGENT_GATES_STATE: stateDir },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
 
     const p1 = spawnAdd("First concurrent note.");
     const p2 = spawnAdd("Second concurrent note.");
-    const [code1, code2, out1, out2] = await Promise.all([
-      p1.exited,
-      p2.exited,
-      new Response(p1.stdout).text(),
-      new Response(p2.stdout).text(),
-    ]);
+    const timer = setTimeout(() => {
+      p1.kill();
+      p2.kill();
+    }, 20_000);
+    let code1: number;
+    let code2: number;
+    let out1: string;
+    let out2: string;
+    try {
+      [code1, code2, out1, out2] = await Promise.all([
+        p1.exited,
+        p2.exited,
+        new Response(p1.stdout).text(),
+        new Response(p2.stdout).text(),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      if (p1.exitCode === null) p1.kill();
+      if (p2.exitCode === null) p2.kill();
+    }
     const codes = [code1, code2].sort((a, b) => a - b);
     expect(codes).toEqual([0, 3]);
     const loserEnvelope: unknown = JSON.parse(code1 === 3 ? out1 : out2);
@@ -207,26 +216,10 @@ describe("PR 1 hardening and catch tests (P0-1, P1-1..P1-5)", () => {
     });
 
     rmSync(join(repo, "change-notes/2026-11-22-race-slug.json"));
-    const retry = runGatesCli(
-      [
-        "change-note",
-        "add",
-        "--slug",
-        "race-slug",
-        "--kind",
-        "added",
-        "--affects",
-        "cli",
-        "--summary",
-        "Clean retry after removal.",
-        "--date",
-        "2026-11-22",
-        "--repository",
-        repo,
-        "--json",
-      ],
-      { cwd: repo, stateDir },
-    );
+    const retry = runGatesCli(addArgv("Clean retry after removal."), {
+      cwd: repo,
+      stateDir,
+    });
     expect(retry.exitCode).toBe(0);
   });
 
