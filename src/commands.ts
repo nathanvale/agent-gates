@@ -53,7 +53,7 @@ export function createAgentGates(
       changeNoteCheckCommand(parsePath),
       versionPreviewCommand(parsePath),
       versionPrepareCommand(state, parsePath),
-      pendingCommand(state, stateFolder),
+      pendingCommand(state),
     ],
     causes,
     state: state.descriptor,

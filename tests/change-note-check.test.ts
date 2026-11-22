@@ -5,6 +5,7 @@ import {
   commitFiles,
   createSandboxTracker,
   git,
+  initGitRepo,
   makeConfiguredRepo,
   runGatesCli,
   writeTreeFile,
@@ -274,6 +275,37 @@ describe("agent-gates change-note check and pending (R1-R9, R16-R19, R23)", () =
     });
     expect(unknownFlag.exitCode).toBe(2);
     expect(unknownFlag.stderr).toContain("USAGE_INVALID_INVOCATION");
+
+    const subParent = makeConfiguredRepo(sandbox);
+    const childSub = sandbox.folder("sub-child-");
+    initGitRepo(childSub);
+    commitFiles(childSub, "sub init", { "README.md": "sub\n" });
+    const subCommit1 = git(childSub, "rev-parse", "HEAD");
+    git(
+      subParent.repo,
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${subCommit1},generated-repository/sub`,
+    );
+    git(subParent.repo, "commit", "-q", "-m", "add gitlink");
+    git(subParent.repo, "config", "diff.ignoreSubmodules", "all");
+    git(subParent.repo, "checkout", "-b", "bump-sub");
+    commitFiles(childSub, "sub update", { "README.md": "sub v2\n" });
+    const subCommit2 = git(childSub, "rev-parse", "HEAD");
+    git(
+      subParent.repo,
+      "update-index",
+      "--replace",
+      "--cacheinfo",
+      `160000,${subCommit2},generated-repository/sub`,
+    );
+    git(subParent.repo, "commit", "-q", "-m", "bump gitlink without note");
+    const subBlocked = checkRepo(subParent.repo, subParent.stateDir);
+    expect(subBlocked.exitCode).toBe(3);
+    expect(subBlocked.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
+    });
   });
 
   test("validates all 4 existing template change notes from origin/main unchanged and pending handles empty/corrupt state", () => {

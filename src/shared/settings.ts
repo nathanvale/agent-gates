@@ -53,6 +53,27 @@ function errorCode(error: unknown): unknown {
   return Reflect.get(Object(error), "code");
 }
 
+function isValidGitMarker(directory: string): boolean {
+  const marker = join(directory, ".git");
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(marker);
+  } catch {
+    return false;
+  }
+  if (stat.isDirectory()) return existsSync(join(marker, "HEAD"));
+  if (!stat.isFile()) return false;
+  try {
+    const content = strictUtf8.decode(readFileSync(marker));
+    const match = /^gitdir:\s*(.+)$/m.exec(content);
+    const gitdir = match?.[1]?.trim();
+    if (gitdir === undefined || gitdir === "") return false;
+    return existsSync(join(resolve(directory, gitdir), "HEAD"));
+  } catch {
+    return false;
+  }
+}
+
 export function discoverRepositoryRoot(
   explicitFolder: string | undefined,
   cwd: string,
@@ -74,7 +95,7 @@ export function discoverRepositoryRoot(
         problem: `Repository path "${explicitFolder}" is not a directory. Repair: pass a git repository directory to --repository.`,
       };
     const real = realpathSync.native(candidate);
-    if (!existsSync(join(real, ".git")))
+    if (!isValidGitMarker(real))
       return {
         ok: false,
         problem: `Directory "${explicitFolder}" is not a git repository root. Repair: initialize git there or pass the git repository root to --repository.`,
@@ -83,7 +104,7 @@ export function discoverRepositoryRoot(
   }
   let current = realpathSync.native(resolve(cwd));
   for (;;) {
-    if (existsSync(join(current, ".git"))) return { ok: true, root: current };
+    if (isValidGitMarker(current)) return { ok: true, root: current };
     const parent = dirname(current);
     if (parent === current)
       return {

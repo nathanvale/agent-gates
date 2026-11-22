@@ -393,6 +393,7 @@ export function changeNoteAddCommand(state: GatesState) {
         );
 
       const scopeKey = `${prepared.root}:${prepared.relativePath}`;
+      let conflictProblem: string | undefined;
       const outcome = await state.transaction(
         context.state,
         {
@@ -404,6 +405,15 @@ export function changeNoteAddCommand(state: GatesState) {
           },
         },
         async (transaction) => {
+          const insideCheck = checkWritableTarget(
+            prepared.root,
+            prepared.folder,
+            prepared.file,
+          );
+          if (!insideCheck.ok) {
+            conflictProblem = insideCheck.problem;
+            return;
+          }
           await transaction.record(
             "change-note.write",
             () => {
@@ -427,6 +437,12 @@ export function changeNoteAddCommand(state: GatesState) {
           );
         },
       );
+
+      if (conflictProblem !== undefined)
+        return context.result(
+          { commandIdentity: identity, causeCode: "DOMAIN_GATES_FILE_EXISTS" },
+          { message: conflictProblem, data: null, effects: nothingChanged },
+        );
 
       if (outcome.kind !== "ran")
         return context.result(

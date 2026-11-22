@@ -276,6 +276,7 @@ export function versionPrepareCommand(
         );
 
       const scopeKey = `${account.repository}:${account.relativePath}`;
+      let conflictProblem: string | undefined;
       const outcome = await state.transaction(
         context.state,
         {
@@ -290,6 +291,15 @@ export function versionPrepareCommand(
           },
         },
         async (transaction) => {
+          const insideCheck = checkWritableTarget(
+            account.repository,
+            account.versions.folder,
+            account.fileName,
+          );
+          if (!insideCheck.ok) {
+            conflictProblem = insideCheck.problem;
+            return;
+          }
           await transaction.record(
             "version-account.write",
             () => {
@@ -313,6 +323,19 @@ export function versionPrepareCommand(
           );
         },
       );
+
+      if (conflictProblem !== undefined)
+        return context.result(
+          {
+            commandIdentity: prepareIdentity,
+            causeCode: "DOMAIN_GATES_FILE_EXISTS",
+          },
+          {
+            message: conflictProblem,
+            data: null,
+            effects: nothingChanged,
+          },
+        );
 
       if (outcome.kind !== "ran") {
         const causeCode =

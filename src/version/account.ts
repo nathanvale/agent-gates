@@ -5,10 +5,13 @@ import {
   todayLocalIsoDate,
 } from "../change-note/rules.ts";
 import {
+  readCommittedGateSettings,
+  resolveCommitOid,
+} from "../shared/git-read.ts";
+import {
   latestVersionTag,
   readChangeNotesSinceTag,
-  readCommittedGateSettings,
-} from "../shared/git-read.ts";
+} from "../shared/git-versions.ts";
 import {
   discoverRepositoryRoot,
   type GateSettings,
@@ -19,6 +22,12 @@ import {
   normalizeLead,
   renderVersionAccount,
 } from "./rules.ts";
+
+function ensureRepair(message: string, fallbackRepair: string): string {
+  return message.includes("Repair:")
+    ? message
+    : `${message} Repair: ${fallbackRepair}`;
+}
 
 export type PreparedAccount = {
   readonly repository: string;
@@ -106,6 +115,7 @@ async function validateVersionInputs(
   | {
       readonly ok: true;
       readonly root: string;
+      readonly headOid: string;
       readonly settings: GateSettings;
       readonly versions: VersionSettings;
       readonly lead: string;
@@ -123,12 +133,36 @@ async function validateVersionInputs(
       causeCode: "DOMAIN_GATES_REPOSITORY_NOT_FOUND",
       message: repoResult.problem,
     };
+  const headOid = await resolveCommitOid(
+    programs,
+    parsePath,
+    repoResult.root,
+    "HEAD",
+  );
+  if (!headOid.ok)
+    return {
+      ok: false,
+      causeCode: "DOMAIN_GATES_GIT_FAILED",
+      message: ensureRepair(
+        headOid.problem,
+        "ensure the repository has at least one commit and run again.",
+      ),
+    };
   const resolved = await readCommittedGateSettings(
     programs,
     parsePath,
     repoResult.root,
+    headOid.value,
   );
-  if (!resolved.ok) return resolved;
+  if (!resolved.ok)
+    return {
+      ok: false,
+      causeCode: resolved.causeCode,
+      message: ensureRepair(
+        resolved.message,
+        "ensure git can read committed files in HEAD and run again.",
+      ),
+    };
   const versions = resolved.settings.versions;
   if (versions === undefined)
     return {
@@ -154,6 +188,7 @@ async function validateVersionInputs(
   return {
     ok: true,
     root: repoResult.root,
+    headOid: headOid.value,
     settings: resolved.settings,
     versions,
     lead: leadResult.value,
@@ -252,12 +287,16 @@ export async function buildPreparedAccount(
     programs,
     parsePath,
     checked.root,
+    checked.headOid,
   );
   if (!latestTagResult.ok)
     return {
       ok: false,
       causeCode: "DOMAIN_GATES_GIT_FAILED",
-      message: latestTagResult.problem,
+      message: ensureRepair(
+        latestTagResult.problem,
+        "ensure the repository tags are readable and run again.",
+      ),
     };
   const previous = latestTagResult.value;
   const notesResult = await readChangeNotesSinceTag(
@@ -266,6 +305,7 @@ export async function buildPreparedAccount(
     checked.root,
     checked.settings,
     previous?.tag,
+    checked.headOid,
   );
   if (!notesResult.ok)
     return {
@@ -274,7 +314,13 @@ export async function buildPreparedAccount(
         notesResult.kind === "git"
           ? "DOMAIN_GATES_GIT_FAILED"
           : "DOMAIN_GATES_NOTE_INVALID",
-      message: notesResult.problem,
+      message:
+        notesResult.kind === "git"
+          ? ensureRepair(
+              notesResult.problem,
+              "ensure git history is readable and run again.",
+            )
+          : notesResult.problem,
     };
   return assembleAccount({
     root: checked.root,

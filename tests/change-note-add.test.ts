@@ -319,5 +319,44 @@ describe("agent-gates change-note add (R1-R7, R16, R19, R23, R25)", () => {
       result: { causeCode: "DOMAIN_GATES_FILE_EXISTS" },
     });
     expect(existsSync(join(outside, "notes"))).toBe(false);
+
+    const bogusDir = sandbox.folder("bogus-git-");
+    writeTreeFile(bogusDir, ".git", "");
+    writeTreeFile(
+      bogusDir,
+      "agent-gates.json",
+      JSON.stringify({
+        changeNotes: {
+          folder: "change-notes",
+          shippedFolders: ["src"],
+          affects: ["cli"],
+        },
+      }),
+    );
+    const bogusRefused = runGatesCli(
+      [
+        "change-note",
+        "add",
+        "--slug",
+        "bogus-root",
+        "--kind",
+        "added",
+        "--affects",
+        "cli",
+        "--summary",
+        "Must refuse empty .git file.",
+        "--date",
+        "2026-11-22",
+        "--repository",
+        bogusDir,
+        "--json",
+      ],
+      { cwd: bogusDir, stateDir: linkRepo.stateDir },
+    );
+    expect(bogusRefused.exitCode).toBe(3);
+    expect(bogusRefused.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_REPOSITORY_NOT_FOUND" },
+    });
+    expect(existsSync(join(bogusDir, "change-notes"))).toBe(false);
   });
 });

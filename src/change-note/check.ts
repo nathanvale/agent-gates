@@ -11,7 +11,9 @@ import {
   diffBaseToHead,
   isNewlyAddedNote,
   isNotePath,
+  readBaseNoteFingerprints,
   readCommittedGateSettings,
+  resolveCommitOid,
   validateCommittedNote,
 } from "../shared/git-read.ts";
 import {
@@ -19,8 +21,15 @@ import {
   type GateSettings,
   isShippedPath,
 } from "../shared/settings.ts";
+import { canonicalChangeNoteKey } from "./rules.ts";
 
 const identity = "agent-gates.change-note-check";
+
+function ensureRepair(message: string, fallbackRepair: string): string {
+  return message.includes("Repair:")
+    ? message
+    : `${message} Repair: ${fallbackRepair}`;
+}
 
 async function validateBranchNotes(
   programs: ProgramsCapability,
@@ -38,6 +47,7 @@ async function validateBranchNotes(
 ) {
   const problems: string[] = [];
   const validatedNotes: string[] = [];
+  const fingerprints = new Map<string, string>();
   for (const entry of entries) {
     const checked = await validateCommittedNote(
       programs,
@@ -51,11 +61,15 @@ async function validateBranchNotes(
         return {
           ok: false as const,
           causeCode: "DOMAIN_GATES_GIT_FAILED" as const,
-          message: checked.problem,
+          message: ensureRepair(
+            checked.problem,
+            "ensure git can read committed blobs in HEAD and run again.",
+          ),
         };
       problems.push(checked.problem);
     } else {
       validatedNotes.push(entry.path);
+      fingerprints.set(entry.path, canonicalChangeNoteKey(checked.entry.note));
     }
   }
   if (problems.length > 0)
@@ -64,7 +78,7 @@ async function validateBranchNotes(
       causeCode: "DOMAIN_GATES_NOTE_INVALID" as const,
       message: problems.join(" "),
     };
-  return { ok: true as const, validatedNotes };
+  return { ok: true as const, validatedNotes, fingerprints };
 }
 
 export function changeNoteCheckCommand(
@@ -229,16 +243,38 @@ export function changeNoteCheckCommand(
           },
           { message: repoResult.problem, data: null, effects: nothingChanged },
         );
+      const headOid = await resolveCommitOid(
+        context.programs,
+        parsePath,
+        repoResult.root,
+        "HEAD",
+      );
+      if (!headOid.ok)
+        return context.result(
+          { commandIdentity: identity, causeCode: "DOMAIN_GATES_GIT_FAILED" },
+          {
+            message: ensureRepair(
+              headOid.problem,
+              "ensure the repository has at least one commit and run again.",
+            ),
+            data: null,
+            effects: nothingChanged,
+          },
+        );
       const settingsResult = await readCommittedGateSettings(
         context.programs,
         parsePath,
         repoResult.root,
+        headOid.value,
       );
       if (!settingsResult.ok)
         return context.result(
           { commandIdentity: identity, causeCode: settingsResult.causeCode },
           {
-            message: settingsResult.message,
+            message: ensureRepair(
+              settingsResult.message,
+              "ensure git can read committed files in HEAD and run again.",
+            ),
             data: null,
             effects: nothingChanged,
           },
@@ -252,22 +288,26 @@ export function changeNoteCheckCommand(
         parsePath,
         repoResult.root,
         base,
+        headOid.value,
       );
       if (!diff.ok)
         return context.result(
           { commandIdentity: identity, causeCode: "DOMAIN_GATES_GIT_FAILED" },
           {
-            message: `${diff.problem} Repair: ensure the base revision exists locally and run again.`,
+            message: ensureRepair(
+              diff.problem,
+              "ensure the base revision exists locally and run again.",
+            ),
             data: null,
             effects: nothingChanged,
           },
         );
 
-      const entries = diff.value;
+      const entries = diff.value.entries;
       const noteEntries = entries.filter(
         (entry) => entry.status !== "D" && isNotePath(notesFolder, entry.path),
       );
-      const addedNotes = entries
+      const candidateAddedNotes = entries
         .filter((entry) => isNewlyAddedNote(notesFolder, entry))
         .map((entry) => entry.path);
 
@@ -283,6 +323,37 @@ export function changeNoteCheckCommand(
           { commandIdentity: identity, causeCode: validated.causeCode },
           { message: validated.message, data: null, effects: nothingChanged },
         );
+
+      let addedNotes = candidateAddedNotes;
+      if (candidateAddedNotes.length > 0) {
+        const baseFingerprints = await readBaseNoteFingerprints(
+          context.programs,
+          parsePath,
+          repoResult.root,
+          diff.value.baseOid,
+          headOid.value,
+          settings,
+        );
+        if (!baseFingerprints.ok)
+          return context.result(
+            { commandIdentity: identity, causeCode: "DOMAIN_GATES_GIT_FAILED" },
+            {
+              message: ensureRepair(
+                baseFingerprints.problem,
+                "ensure git history between the base revision and HEAD is readable and run again.",
+              ),
+              data: null,
+              effects: nothingChanged,
+            },
+          );
+        addedNotes = candidateAddedNotes.filter((path) => {
+          const fingerprint = validated.fingerprints.get(path);
+          return (
+            fingerprint !== undefined &&
+            !baseFingerprints.value.has(fingerprint)
+          );
+        });
+      }
 
       const shippedFiles = entries
         .filter(

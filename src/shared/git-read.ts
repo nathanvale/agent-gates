@@ -1,15 +1,11 @@
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
 import { programDetails } from "agent-cli-kernel/addons/programs";
 import {
+  canonicalChangeNoteKey,
   type ChangeNoteEntry,
-  compareText,
   isChangeNoteFile,
   parseChangeNote,
 } from "../change-note/rules.ts";
-import {
-  compareRepositoryVersions,
-  parseRepositoryVersion,
-} from "../version/rules.ts";
 import {
   GATE_SETTINGS_FILE,
   type GateSettings,
@@ -18,10 +14,11 @@ import {
 
 type GitReadCommand =
   | "for-each-ref"
-  | "ls-tree"
   | "diff"
   | "cat-file"
-  | "rev-parse";
+  | "ls-tree"
+  | "rev-parse"
+  | "merge-base";
 
 type DiffEntry = {
   readonly mode: string;
@@ -32,16 +29,11 @@ type DiffEntry = {
   readonly invalidUtf8Path: boolean;
 };
 
-type VersionTag = {
-  readonly tag: string;
-  readonly version: string;
-};
-
-type GitResult<T> =
+export type GitResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly problem: string };
 
-type BlobCandidate = {
+export type BlobCandidate = {
   readonly mode: string;
   readonly blob: string;
   readonly path: string;
@@ -51,11 +43,10 @@ type BlobCandidate = {
 const gitTimeoutMilliseconds = 10_000;
 const gitShutdownMilliseconds = 1_000;
 const gitOutputLimitBytes = 4 * 1024 * 1024;
-const versionTagPattern = /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/;
 const replacementCharacter = "\uFFFD";
 const commitOidPattern = /^[0-9a-f]{40,64}$/;
 
-function isPlainGitFileMode(mode: string): boolean {
+export function isPlainGitFileMode(mode: string): boolean {
   return mode === "100644" || mode === "100755";
 }
 
@@ -109,7 +100,7 @@ function isolatedGitArgs(
   ];
 }
 
-async function runReadOnlyGit(
+export async function runReadOnlyGit(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
@@ -144,7 +135,7 @@ async function runReadOnlyGit(
   return { ok: true, value: ran.stdout };
 }
 
-function splitNul(output: string): readonly string[] {
+export function splitNul(output: string): readonly string[] {
   const fields: string[] = [];
   let offset = 0;
   for (
@@ -231,7 +222,7 @@ function parseDiffEntries(
   return { ok: true, value: entries };
 }
 
-async function resolveCommitOid(
+export async function resolveCommitOid(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
@@ -257,7 +248,7 @@ async function resolveCommitOid(
   return { ok: true, value: oid };
 }
 
-async function diffResolvedRange(
+export async function diffResolvedRange(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
@@ -268,6 +259,7 @@ async function diffResolvedRange(
     "--raw",
     "--no-abbrev",
     "--find-renames",
+    "--ignore-submodules=none",
     "--no-ext-diff",
     "--no-textconv",
     "--no-relative",
@@ -285,16 +277,88 @@ export async function diffBaseToHead(
   parsePath: (value: string) => ParsedPath,
   root: string,
   base: string,
-): Promise<GitResult<readonly DiffEntry[]>> {
+  headOid: string,
+): Promise<
+  GitResult<{
+    readonly baseOid: string;
+    readonly entries: readonly DiffEntry[];
+  }>
+> {
   const baseOid = await resolveCommitOid(programs, parsePath, root, base);
   if (!baseOid.ok) return baseOid;
-  const headOid = await resolveCommitOid(programs, parsePath, root, "HEAD");
-  if (!headOid.ok) return headOid;
-  return diffResolvedRange(
+  const entries = await diffResolvedRange(
     programs,
     parsePath,
     root,
-    `${baseOid.value}...${headOid.value}`,
+    `${baseOid.value}...${headOid}`,
+  );
+  if (!entries.ok) return entries;
+  return { ok: true, value: { baseOid: baseOid.value, entries: entries.value } };
+}
+
+export async function readTreeNoteFingerprints(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
+  treeCommitOid: string,
+  settings: GateSettings,
+): Promise<GitResult<ReadonlySet<string>>> {
+  const notesFolder = settings.changeNotes.folder;
+  const listed = await runReadOnlyGit(programs, parsePath, root, "ls-tree", [
+    "-r",
+    "-z",
+    "--full-tree",
+    treeCommitOid,
+    "--",
+    notesFolder,
+  ]);
+  if (!listed.ok) return listed;
+  const fingerprints = new Set<string>();
+  for (const record of splitNul(listed.value)) {
+    const tab = record.indexOf("\t");
+    if (tab < 0) continue;
+    const header = record.slice(0, tab);
+    const path = record.slice(tab + 1);
+    if (!isNotePath(notesFolder, path)) continue;
+    const [mode = "", type = "", blob = ""] = header.split(" ");
+    if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "") continue;
+    const content = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
+      "blob",
+      blob,
+    ]);
+    if (!content.ok) return content;
+    const parsed = parseChangeNote(
+      path,
+      content.value,
+      settings.changeNotes.affects,
+    );
+    if (parsed.ok) fingerprints.add(canonicalChangeNoteKey(parsed.note));
+  }
+  return { ok: true, value: fingerprints };
+}
+
+export async function readBaseNoteFingerprints(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
+  baseOid: string,
+  headOid: string,
+  settings: GateSettings,
+): Promise<GitResult<ReadonlySet<string>>> {
+  const mergeBase = await runReadOnlyGit(
+    programs,
+    parsePath,
+    root,
+    "merge-base",
+    [baseOid, headOid],
+  );
+  if (!mergeBase.ok) return mergeBase;
+  return readTreeNoteFingerprints(
+    programs,
+    parsePath,
+    root,
+    mergeBase.value.trim(),
+    settings,
   );
 }
 
@@ -302,6 +366,7 @@ export async function readCommittedGateSettings(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
+  headOid: string,
 ): Promise<
   | { readonly ok: true; readonly settings: GateSettings }
   | {
@@ -316,7 +381,7 @@ export async function readCommittedGateSettings(
   const listed = await runReadOnlyGit(programs, parsePath, root, "ls-tree", [
     "-z",
     "--full-tree",
-    "HEAD",
+    headOid,
     "--",
     GATE_SETTINGS_FILE,
   ]);
@@ -444,171 +509,4 @@ export async function validateCommittedNote(
   if (!parsed.ok)
     return { ok: false, kind: "invalid", problem: parsed.problem };
   return { ok: true, entry: Object.freeze({ file, note: parsed.note }) };
-}
-
-export async function latestVersionTag(
-  programs: ProgramsCapability,
-  parsePath: (value: string) => ParsedPath,
-  root: string,
-): Promise<GitResult<VersionTag | undefined>> {
-  const ran = await runReadOnlyGit(programs, parsePath, root, "for-each-ref", [
-    "--merged=HEAD",
-    "--format=%(refname:short)",
-    "refs/tags",
-  ]);
-  if (!ran.ok) return ran;
-  const tags: VersionTag[] = [];
-  for (const line of ran.value.split("\n")) {
-    const match = versionTagPattern.exec(line);
-    const version = match?.[1];
-    if (version !== undefined && parseRepositoryVersion(version).ok)
-      tags.push({ tag: line, version });
-  }
-  tags.sort((left, right) =>
-    compareRepositoryVersions(left.version, right.version),
-  );
-  return { ok: true, value: tags.at(-1) };
-}
-
-function parseTreeCandidate(
-  record: string,
-  notesFolder: string,
-):
-  | { readonly ok: true; readonly candidate: BlobCandidate | undefined }
-  | {
-      readonly ok: false;
-      readonly kind: "invalid" | "git";
-      readonly problem: string;
-    } {
-  const tab = record.indexOf("\t");
-  if (tab < 0)
-    return {
-      ok: false,
-      kind: "git",
-      problem: "git ls-tree returned an incomplete tree record.",
-    };
-  const header = record.slice(0, tab);
-  const path = record.slice(tab + 1);
-  if (!isNotePath(notesFolder, path)) return { ok: true, candidate: undefined };
-  const [mode = "", type = "", blob = ""] = header.split(" ");
-  if (mode === "" || type === "" || blob === "")
-    return {
-      ok: false,
-      kind: "git",
-      problem: "git ls-tree returned an incomplete tree record.",
-    };
-  if (type !== "blob")
-    return {
-      ok: false,
-      kind: "invalid",
-      problem: `${path}: must be a plain file in HEAD (git entry "${header}"). Repair: replace it with a regular UTF-8 JSON file.`,
-    };
-  return {
-    ok: true,
-    candidate: {
-      mode,
-      blob,
-      path,
-      invalidUtf8Path: path.includes(replacementCharacter),
-    },
-  };
-}
-
-async function candidatesAtHead(
-  programs: ProgramsCapability,
-  parsePath: (value: string) => ParsedPath,
-  root: string,
-  notesFolder: string,
-): Promise<
-  | { readonly ok: true; readonly candidates: readonly BlobCandidate[] }
-  | {
-      readonly ok: false;
-      readonly kind: "invalid" | "git";
-      readonly problem: string;
-    }
-> {
-  const ran = await runReadOnlyGit(programs, parsePath, root, "ls-tree", [
-    "-r",
-    "-z",
-    "--full-tree",
-    "HEAD",
-    "--",
-    notesFolder,
-  ]);
-  if (!ran.ok) return { ok: false, kind: "git", problem: ran.problem };
-  const candidates: BlobCandidate[] = [];
-  for (const record of splitNul(ran.value)) {
-    const parsed = parseTreeCandidate(record, notesFolder);
-    if (!parsed.ok) return parsed;
-    if (parsed.candidate !== undefined) candidates.push(parsed.candidate);
-  }
-  return { ok: true, candidates };
-}
-
-export async function readChangeNotesSinceTag(
-  programs: ProgramsCapability,
-  parsePath: (value: string) => ParsedPath,
-  root: string,
-  settings: GateSettings,
-  previousTag: string | undefined,
-): Promise<
-  | { readonly ok: true; readonly entries: readonly ChangeNoteEntry[] }
-  | {
-      readonly ok: false;
-      readonly kind: "invalid" | "git";
-      readonly problem: string;
-    }
-> {
-  const notesFolder = settings.changeNotes.folder;
-  let candidates: readonly BlobCandidate[];
-  if (previousTag === undefined) {
-    const atHead = await candidatesAtHead(
-      programs,
-      parsePath,
-      root,
-      notesFolder,
-    );
-    if (!atHead.ok) return atHead;
-    candidates = atHead.candidates;
-  } else {
-    const tagOid = await resolveCommitOid(
-      programs,
-      parsePath,
-      root,
-      `refs/tags/${previousTag}`,
-    );
-    if (!tagOid.ok) return { ok: false, kind: "git", problem: tagOid.problem };
-    const headOid = await resolveCommitOid(programs, parsePath, root, "HEAD");
-    if (!headOid.ok) return { ok: false, kind: "git", problem: headOid.problem };
-    const diff = await diffResolvedRange(
-      programs,
-      parsePath,
-      root,
-      `${tagOid.value}..${headOid.value}`,
-      notesFolder,
-    );
-    if (!diff.ok) return { ok: false, kind: "git", problem: diff.problem };
-    candidates = diff.value
-      .filter((entry) => isNewlyAddedNote(notesFolder, entry))
-      .map(({ mode, blob, path, invalidUtf8Path }) => ({
-        mode,
-        blob,
-        path,
-        invalidUtf8Path,
-      }));
-  }
-  const entries: ChangeNoteEntry[] = [];
-  for (const candidate of candidates) {
-    const validated = await validateCommittedNote(
-      programs,
-      parsePath,
-      root,
-      settings,
-      candidate,
-    );
-    if (!validated.ok) return validated;
-    entries.push(validated.entry);
-  }
-  entries.sort((left, right) => compareText(left.file, right.file));
-  return { ok: true, entries: Object.freeze(entries) };
 }
