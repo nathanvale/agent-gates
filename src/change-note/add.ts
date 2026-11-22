@@ -9,6 +9,7 @@ import {
   repositoryScopeId,
   stationWords,
   targetScopeKey,
+  transactionRefusal,
   unresolvedRepair,
 } from "../shared/causes.ts";
 import {
@@ -95,13 +96,6 @@ function prepareNoteWrite(input: AddInput) {
     note: parsed.note,
     content: formatChangeNoteJson(parsed.note),
   };
-}
-
-function transactionRefusalCause(kind: string) {
-  if (kind === "held-lock") return "DOMAIN_GATES_CHANGE_HELD" as const;
-  if (kind === "unresolved-case")
-    return "DOMAIN_GATES_CHANGE_UNRESOLVED" as const;
-  return "DOMAIN_GATES_STATE_UNAVAILABLE" as const;
 }
 
 export function changeNoteAddCommand(state: GatesState) {
@@ -445,18 +439,17 @@ export function changeNoteAddCommand(state: GatesState) {
           { message: conflictProblem, data: null, effects: nothingChanged },
         );
 
-      if (outcome.kind !== "ran")
+      if (outcome.kind !== "ran") {
+        const refusal = transactionRefusal(outcome.kind, "change-note add");
         return context.result(
+          { commandIdentity: identity, causeCode: refusal.causeCode },
           {
-            commandIdentity: identity,
-            causeCode: transactionRefusalCause(outcome.kind),
-          },
-          {
-            message: `Did not write ${prepared.relativePath}: ${outcome.kind}.`,
+            message: `Did not write ${prepared.relativePath}: ${outcome.kind}. Repair: ${refusal.repair}`,
             data: null,
             effects: nothingChanged,
           },
         );
+      }
       if (outcome.proof.transactionState === "unchanged")
         return context.result(
           {
@@ -464,7 +457,7 @@ export function changeNoteAddCommand(state: GatesState) {
             causeCode: "DOMAIN_GATES_STATE_UNAVAILABLE",
           },
           {
-            message: `Did not write ${prepared.relativePath}.`,
+            message: `Did not write ${prepared.relativePath}. Repair: inspect the state folder named by AGENT_GATES_STATE and retry.`,
             data: null,
             effects: nothingChanged,
           },
@@ -476,7 +469,7 @@ export function changeNoteAddCommand(state: GatesState) {
             causeCode: "DOMAIN_GATES_WRITE_UNCONFIRMED",
           },
           {
-            message: `Write of ${prepared.relativePath} could not be confirmed.`,
+            message: `Write of ${prepared.relativePath} could not be confirmed. Repair: ${unresolvedRepair}`,
             data: null,
             transaction: outcome.proof,
           },

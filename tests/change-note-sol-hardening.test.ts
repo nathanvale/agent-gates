@@ -316,4 +316,178 @@ describe("Sol 6.1 PR 1 hardening tests (affects order, folder move, gitlink, sco
     expect(plainPending.stdout).not.toContain("2026-11-22-colon-secret.json");
     expect(unfinishedEntries(plainPending.envelope)).toEqual([]);
   });
+
+  test("P1-2 (Check B): rename in commit 1 then minify + punctuation edit in commit 2 still fails R8", () => {
+    const { repo, stateDir } = makeCustomRepo(sandbox, {
+      changeNotes: {
+        folder: "change-notes",
+        shippedFolders: ["src"],
+        affects: ["cli"],
+      },
+    });
+    commitFiles(repo, "base note", {
+      "change-notes/2026-11-20-old.json": `${JSON.stringify(
+        {
+          kind: "fixed",
+          breaking: false,
+          affects: ["cli"],
+          summary: "Earlier fix with plenty of pretty-printed formatting.",
+          action: null,
+        },
+        null,
+        2,
+      )}\n`,
+      "src/app.ts": "export const v = 1;\n",
+    });
+
+    git(repo, "checkout", "-b", "rename-then-edit");
+    git(
+      repo,
+      "mv",
+      "change-notes/2026-11-20-old.json",
+      "change-notes/2026-11-22-disguised.json",
+    );
+    git(repo, "commit", "-q", "-m", "step 1 rename old note");
+
+    writeTreeFile(
+      repo,
+      "change-notes/2026-11-22-disguised.json",
+      JSON.stringify({
+        kind: "fixed",
+        breaking: false,
+        affects: ["cli"],
+        summary: "Earlier fix with plenty of pretty-printed formatting!",
+        action: null,
+      }),
+    );
+    writeTreeFile(repo, "src/app.ts", "export const v = 2;\n");
+    git(repo, "add", "change-notes/2026-11-22-disguised.json", "src/app.ts");
+    git(repo, "commit", "-q", "-m", "step 2 minify, tweak summary, edit src");
+
+    const checked = runGatesCli(
+      [
+        "change-note",
+        "check",
+        "--base",
+        "main",
+        "--repository",
+        repo,
+        "--json",
+      ],
+      { cwd: repo, stateDir },
+    );
+    expect(checked.exitCode).toBe(3);
+    expect(checked.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
+    });
+  });
+
+  test("P2-1..P2-4: literal U+FFFD passes R9, missing affects lists allowed words, and state refusals print Repair", async () => {
+    const { repo, stateDir } = makeCustomRepo(sandbox, {
+      changeNotes: {
+        folder: "change-notes",
+        shippedFolders: ["src"],
+        affects: ["parser", "cli"],
+      },
+    });
+    const runCheck = () =>
+      runGatesCli(
+        [
+          "change-note",
+          "check",
+          "--base",
+          "main",
+          "--repository",
+          repo,
+          "--json",
+        ],
+        { cwd: repo, stateDir },
+      );
+    git(repo, "checkout", "-b", "literal-fffd");
+    commitFiles(repo, "valid literal U+FFFD note", {
+      "change-notes/2026-11-22-fffd.json": `${JSON.stringify(
+        {
+          kind: "fixed",
+          breaking: false,
+          affects: ["cli"],
+          summary: "Show \uFFFD for undecodable bytes.",
+          action: null,
+        },
+        null,
+        2,
+      )}\n`,
+      "src/app.ts": "export const v = 2;\n",
+    });
+    expect(runCheck().exitCode).toBe(0);
+
+    git(repo, "checkout", "main");
+    git(repo, "checkout", "-b", "missing-affects");
+    commitFiles(repo, "note missing affects", {
+      "change-notes/2026-11-22-no-affects.json": JSON.stringify({
+        kind: "fixed",
+        breaking: false,
+        summary: "Missing affects key.",
+        action: null,
+      }),
+    });
+    const missingAffects = runCheck();
+    expect(missingAffects.exitCode).toBe(3);
+    expect(
+      String(Reflect.get(Object(missingAffects.envelope), "message")),
+    ).toContain("cli, parser");
+
+    const unavailable = runGatesCli(
+      [
+        "change-note",
+        "add",
+        "--slug",
+        "unavailable-probe",
+        "--kind",
+        "none",
+        "--summary",
+        "Probe unavailable state.",
+        "--date",
+        "2026-11-22",
+        "--repository",
+        repo,
+      ],
+      { cwd: repo, stateDir: "/dev/null" },
+    );
+    expect(unavailable.exitCode).toBe(3);
+    expect(unavailable.stderr).toContain("DOMAIN_GATES_STATE_UNAVAILABLE");
+    expect(unavailable.stderr).toContain("Repair:");
+
+    await seedUnfinishedOperation(
+      stateDir,
+      repo,
+      "change-notes/2026-11-22-blocked-slug.json",
+    );
+    const addWithSlug = (slug: string, extra: readonly string[] = []) =>
+      runGatesCli(
+        [
+          "change-note",
+          "add",
+          "--slug",
+          slug,
+          "--kind",
+          "added",
+          "--affects",
+          "cli",
+          "--summary",
+          `Note for ${slug}.`,
+          "--date",
+          "2026-11-22",
+          "--repository",
+          repo,
+          ...extra,
+        ],
+        { cwd: repo, stateDir },
+      );
+    const blocked = addWithSlug("blocked-slug");
+    expect(blocked.exitCode).toBe(3);
+    expect(blocked.stderr).toContain("DOMAIN_GATES_CHANGE_UNRESOLVED");
+    expect(blocked.stderr).toContain("Repair:");
+    expect(blocked.stderr).toContain("pending");
+    expect(addWithSlug("other-slug", ["--json"]).exitCode).toBe(0);
+  });
 });

@@ -1,7 +1,7 @@
+import { createHash } from "node:crypto";
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
 import { programDetails } from "agent-cli-kernel/addons/programs";
 import {
-  canonicalChangeNoteKey,
   type ChangeNoteEntry,
   isChangeNoteFile,
   parseChangeNote,
@@ -17,7 +17,8 @@ type GitReadCommand =
   | "cat-file"
   | "ls-tree"
   | "rev-parse"
-  | "merge-base";
+  | "merge-base"
+  | "log";
 
 type DiffEntry = {
   readonly mode: string;
@@ -28,7 +29,7 @@ type DiffEntry = {
   readonly invalidUtf8Path: boolean;
 };
 
-type GitResult<T> =
+export type GitResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly problem: string };
 
@@ -58,7 +59,25 @@ const clearedGitEnvNames = [
   "GIT_CONFIG_SYSTEM",
 ] as const;
 
-function isPlainGitFileMode(mode: string): boolean {
+const utf8BomBytes = Buffer.from([0xef, 0xbb, 0xbf]);
+
+function gitBlobHash(algorithm: "sha1" | "sha256", bytes: Buffer): string {
+  return createHash(algorithm)
+    .update(`blob ${String(bytes.byteLength)}\0`)
+    .update(bytes)
+    .digest("hex");
+}
+
+function hasInvalidUtf8Decoding(blobOid: string, text: string): boolean {
+  if (!text.includes(replacementCharacter)) return false;
+  const algorithm = blobOid.length === 64 ? "sha256" : "sha1";
+  const encoded = Buffer.from(text, "utf8");
+  if (gitBlobHash(algorithm, encoded) === blobOid) return false;
+  const withBom = Buffer.concat([utf8BomBytes, encoded]);
+  return gitBlobHash(algorithm, withBom) !== blobOid;
+}
+
+export function isPlainGitFileMode(mode: string): boolean {
   return mode === "100644" || mode === "100755";
 }
 
@@ -93,7 +112,7 @@ function isolatedGitArgs(
   ];
 }
 
-async function runReadOnlyGit(
+export async function runReadOnlyGit(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
@@ -128,7 +147,7 @@ async function runReadOnlyGit(
   return { ok: true, value: ran.stdout };
 }
 
-function splitNul(output: string): readonly string[] {
+export function splitNul(output: string): readonly string[] {
   const fields: string[] = [];
   let offset = 0;
   for (
@@ -255,104 +274,6 @@ export async function diffBaseToHead(
   };
 }
 
-async function collectFolderNoteFingerprints(
-  programs: ProgramsCapability,
-  parsePath: (value: string) => ParsedPath,
-  root: string,
-  commitOid: string,
-  notesFolder: string,
-  allowedAffects: ReadonlySet<string>,
-  fingerprints: Set<string>,
-): Promise<GitResult<undefined>> {
-  const listed = await runReadOnlyGit(programs, parsePath, root, "ls-tree", [
-    "-r",
-    "-z",
-    "--full-tree",
-    commitOid,
-    "--",
-    notesFolder,
-  ]);
-  if (!listed.ok) return listed;
-  for (const record of splitNul(listed.value)) {
-    const tab = record.indexOf("\t");
-    if (tab < 0) continue;
-    const header = record.slice(0, tab);
-    const path = record.slice(tab + 1);
-    if (!isNotePath(notesFolder, path)) continue;
-    const [mode = "", type = "", blob = ""] = header.split(" ");
-    if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "") continue;
-    const content = await runReadOnlyGit(
-      programs,
-      parsePath,
-      root,
-      "cat-file",
-      ["blob", blob],
-    );
-    if (!content.ok) return content;
-    const parsed = parseChangeNote(path, content.value, allowedAffects);
-    if (parsed.ok) fingerprints.add(canonicalChangeNoteKey(parsed.note));
-  }
-  return { ok: true, value: undefined };
-}
-
-export async function readBaseNoteFingerprints(
-  programs: ProgramsCapability,
-  parsePath: (value: string) => ParsedPath,
-  root: string,
-  baseOid: string,
-  headOid: string,
-  settings: GateSettings,
-): Promise<GitResult<ReadonlySet<string>>> {
-  const mergeBase = await runReadOnlyGit(
-    programs,
-    parsePath,
-    root,
-    "merge-base",
-    [baseOid, headOid],
-  );
-  if (!mergeBase.ok) return mergeBase;
-  const mergeBaseOid = mergeBase.value.trim();
-  const fingerprints = new Set<string>();
-  const headScan = await collectFolderNoteFingerprints(
-    programs,
-    parsePath,
-    root,
-    mergeBaseOid,
-    settings.changeNotes.folder,
-    settings.changeNotes.affects,
-    fingerprints,
-  );
-  if (!headScan.ok) return headScan;
-  const baseSettings = await readCommittedGateSettings(
-    programs,
-    parsePath,
-    root,
-    mergeBaseOid,
-  );
-  if (!baseSettings.ok && baseSettings.causeCode === "DOMAIN_GATES_GIT_FAILED")
-    return { ok: false, problem: baseSettings.message };
-  if (baseSettings.ok) {
-    const sameFolder =
-      baseSettings.settings.changeNotes.folder === settings.changeNotes.folder;
-    const sameAffects =
-      [...baseSettings.settings.changeNotes.affects].sort().join(",") ===
-      [...settings.changeNotes.affects].sort().join(",");
-    if (!sameFolder || !sameAffects) {
-      const baseScan = await collectFolderNoteFingerprints(
-        programs,
-        parsePath,
-        root,
-        mergeBaseOid,
-        baseSettings.settings.changeNotes.folder,
-        baseSettings.settings.changeNotes.affects,
-        fingerprints,
-      );
-      if (!baseScan.ok) return baseScan;
-    }
-  }
-  return { ok: true, value: fingerprints };
-}
-
 function failCommittedSettings(
   causeCode:
     | "DOMAIN_GATES_SETTINGS_MISSING"
@@ -408,7 +329,7 @@ export async function readCommittedGateSettings(
   ]);
   if (!content.ok)
     return failCommittedSettings("DOMAIN_GATES_GIT_FAILED", content.problem);
-  if (content.value.includes(replacementCharacter))
+  if (hasInvalidUtf8Decoding(blob, content.value))
     return failCommittedSettings(
       "DOMAIN_GATES_SETTINGS_INVALID",
       `${GATE_SETTINGS_FILE} in git HEAD is not valid UTF-8 text. Repair: commit ${GATE_SETTINGS_FILE} as valid UTF-8 JSON.`,
@@ -483,7 +404,7 @@ export async function validateCommittedNote(
     candidate.blob,
   ]);
   if (!blob.ok) return { ok: false, kind: "git", problem: blob.problem };
-  if (blob.value.includes(replacementCharacter))
+  if (hasInvalidUtf8Decoding(candidate.blob, blob.value))
     return {
       ok: false,
       kind: "invalid",
