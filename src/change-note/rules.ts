@@ -67,7 +67,8 @@ export function isValidIsoDate(raw: string): boolean {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
-  const date = new Date(Date.UTC(year, month - 1, day));
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
   return (
     date.getUTCFullYear() === year &&
     date.getUTCMonth() === month - 1 &&
@@ -139,6 +140,15 @@ function parseKindAndBreaking(
   return { ok: true, value: { kind, breaking } };
 }
 
+function describeValue(item: unknown): string {
+  if (typeof item === "string") return item;
+  try {
+    return JSON.stringify(item);
+  } catch {
+    return typeof item;
+  }
+}
+
 function parseAffects(
   file: string,
   raw: unknown,
@@ -154,7 +164,7 @@ function parseAffects(
   for (const item of raw) {
     if (typeof item !== "string" || !surfacePattern.test(item))
       return fail(
-        `${file}: invalid affects entry "${String(item)}". Repair: use one of ${allowedList}.`,
+        `${file}: invalid affects entry "${describeValue(item)}". Repair: use one of ${allowedList}.`,
       );
     affects.push(item);
   }

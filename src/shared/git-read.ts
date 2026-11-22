@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
 import { programDetails } from "agent-cli-kernel/addons/programs";
 import {
@@ -6,9 +5,13 @@ import {
   isChangeNoteFile,
   parseChangeNote,
 } from "../change-note/rules.ts";
-import type { GateSettings } from "./settings.ts";
+import {
+  GATE_SETTINGS_FILE,
+  type GateSettings,
+  parseGateSettingsText,
+} from "./settings.ts";
 
-type GitReadCommand = "diff" | "cat-file";
+type GitReadCommand = "diff" | "cat-file" | "ls-tree" | "rev-parse";
 
 type DiffEntry = {
   readonly mode: string;
@@ -30,14 +33,25 @@ type BlobCandidate = {
   readonly invalidUtf8Path: boolean;
 };
 
-const envExecutablePath = join("/", "usr", "bin", "env");
 const gitTimeoutMilliseconds = 10_000;
 const gitShutdownMilliseconds = 1_000;
 const gitOutputLimitBytes = 4 * 1024 * 1024;
 const replacementCharacter = "\uFFFD";
+const commitOidPattern = /^[0-9a-f]{40,64}$/;
 
 function isPlainGitFileMode(mode: string): boolean {
   return mode === "100644" || mode === "100755";
+}
+
+function resolveEnvExecutable(): GitResult<string> {
+  const found = Bun.which("env");
+  if (found === null)
+    return {
+      ok: false,
+      problem:
+        'Could not find "env" executable on PATH. Repair: ensure standard POSIX tools are available on PATH.',
+    };
+  return { ok: true, value: found };
 }
 
 function isolatedGitArgs(
@@ -86,8 +100,10 @@ async function runReadOnlyGit(
   command: GitReadCommand,
   args: readonly string[],
 ): Promise<GitResult<string>> {
+  const envPath = resolveEnvExecutable();
+  if (!envPath.ok) return envPath;
   const ran = await programs.inspect({
-    executable: parsePath(envExecutablePath),
+    executable: parsePath(envPath.value),
     args: isolatedGitArgs(root, command, args),
     timeoutMilliseconds: gitTimeoutMilliseconds,
     outputLimitBytes: gitOutputLimitBytes,
@@ -199,14 +215,44 @@ function parseDiffEntries(
   return { ok: true, value: entries };
 }
 
-export async function diffRange(
+async function resolveCommitOid(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
-  range: string,
-  pathFilter?: string,
+  revision: string,
+): Promise<GitResult<string>> {
+  if (revision.startsWith("-"))
+    return {
+      ok: false,
+      problem: `Invalid git revision "${revision}". Repair: pass a branch, tag, or commit name that does not start with "-".`,
+    };
+  const ran = await runReadOnlyGit(programs, parsePath, root, "rev-parse", [
+    "--verify",
+    "--end-of-options",
+    `${revision}^{commit}`,
+  ]);
+  if (!ran.ok) return ran;
+  const oid = ran.value.trim();
+  if (!commitOidPattern.test(oid))
+    return {
+      ok: false,
+      problem: `Could not resolve "${revision}" to a git commit.`,
+    };
+  return { ok: true, value: oid };
+}
+
+export async function diffBaseToHead(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
+  base: string,
 ): Promise<GitResult<readonly DiffEntry[]>> {
-  const args = [
+  const baseOid = await resolveCommitOid(programs, parsePath, root, base);
+  if (!baseOid.ok) return baseOid;
+  const headOid = await resolveCommitOid(programs, parsePath, root, "HEAD");
+  if (!headOid.ok) return headOid;
+  const range = `${baseOid.value}...${headOid.value}`;
+  const ran = await runReadOnlyGit(programs, parsePath, root, "diff", [
     "--raw",
     "--no-abbrev",
     "--find-renames",
@@ -215,11 +261,83 @@ export async function diffRange(
     "--no-relative",
     "-z",
     range,
-    ...(pathFilter === undefined ? [] : ["--", pathFilter]),
-  ];
-  const ran = await runReadOnlyGit(programs, parsePath, root, "diff", args);
+  ]);
   if (!ran.ok) return ran;
   return parseDiffEntries(ran.value, range);
+}
+
+export async function readCommittedGateSettings(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
+): Promise<
+  | { readonly ok: true; readonly settings: GateSettings }
+  | {
+      readonly ok: false;
+      readonly causeCode:
+        | "DOMAIN_GATES_SETTINGS_MISSING"
+        | "DOMAIN_GATES_SETTINGS_INVALID"
+        | "DOMAIN_GATES_GIT_FAILED";
+      readonly message: string;
+    }
+> {
+  const listed = await runReadOnlyGit(programs, parsePath, root, "ls-tree", [
+    "-z",
+    "--full-tree",
+    "HEAD",
+    "--",
+    GATE_SETTINGS_FILE,
+  ]);
+  if (!listed.ok)
+    return {
+      ok: false,
+      causeCode: "DOMAIN_GATES_GIT_FAILED",
+      message: listed.problem,
+    };
+  const records = splitNul(listed.value);
+  const first = records[0];
+  if (first === undefined)
+    return {
+      ok: false,
+      causeCode: "DOMAIN_GATES_SETTINGS_MISSING",
+      message: `Missing ${GATE_SETTINGS_FILE} in git HEAD. Repair: commit ${GATE_SETTINGS_FILE} at the repository root declaring changeNotes settings.`,
+    };
+  const tab = first.indexOf("\t");
+  const header = tab >= 0 ? first.slice(0, tab) : "";
+  const [mode = "", type = "", blob = ""] = header.split(" ");
+  if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "")
+    return {
+      ok: false,
+      causeCode: "DOMAIN_GATES_SETTINGS_INVALID",
+      message: `${GATE_SETTINGS_FILE} must be a plain file in git HEAD (mode ${mode}). Repair: commit a regular UTF-8 JSON file at ${GATE_SETTINGS_FILE}.`,
+    };
+  const content = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
+    "blob",
+    blob,
+  ]);
+  if (!content.ok)
+    return {
+      ok: false,
+      causeCode: "DOMAIN_GATES_GIT_FAILED",
+      message: content.problem,
+    };
+  if (content.value.includes(replacementCharacter))
+    return {
+      ok: false,
+      causeCode: "DOMAIN_GATES_SETTINGS_INVALID",
+      message: `${GATE_SETTINGS_FILE} in git HEAD is not valid UTF-8 text. Repair: commit ${GATE_SETTINGS_FILE} as valid UTF-8 JSON.`,
+    };
+  const parsed = parseGateSettingsText(content.value);
+  if (!parsed.ok)
+    return {
+      ok: false,
+      causeCode:
+        parsed.kind === "missing"
+          ? "DOMAIN_GATES_SETTINGS_MISSING"
+          : "DOMAIN_GATES_SETTINGS_INVALID",
+      message: parsed.problem,
+    };
+  return { ok: true, settings: parsed.settings };
 }
 
 export function isNotePath(notesFolder: string, path: string): boolean {

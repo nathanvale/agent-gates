@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { isValidSurfaceWord } from "../change-note/rules.ts";
 
-const GATE_SETTINGS_FILE = "agent-gates.json";
+export const GATE_SETTINGS_FILE = "agent-gates.json";
 const DEFAULT_VERSION_HEADING = "Repository version";
 
 const topLevelKeys = new Set<string>(["changeNotes", "versions"]);
@@ -53,7 +53,7 @@ function errorCode(error: unknown): unknown {
   return Reflect.get(Object(error), "code");
 }
 
-function discoverRepositoryRoot(
+export function discoverRepositoryRoot(
   explicitFolder: string | undefined,
   cwd: string,
 ): RepositoryResolution {
@@ -237,6 +237,15 @@ function parseShippedFolders(
   return { ok: true, value: Object.freeze(items) };
 }
 
+function describeValue(item: unknown): string {
+  if (typeof item === "string") return item;
+  try {
+    return JSON.stringify(item);
+  } catch {
+    return typeof item;
+  }
+}
+
 function parseAffectsWords(
   raw: unknown,
 ):
@@ -252,7 +261,7 @@ function parseAffectsWords(
     if (typeof item !== "string" || !isValidSurfaceWord(item))
       return {
         ok: false,
-        problem: `${GATE_SETTINGS_FILE}: changeNotes.affects entry "${String(item)}" must be lower-case letters and digits joined by "-" or "/". Repair: fix the affects word.`,
+        problem: `${GATE_SETTINGS_FILE}: changeNotes.affects entry "${describeValue(item)}" must be lower-case letters and digits joined by "-" or "/". Repair: fix the affects word.`,
       };
     words.add(item);
   }
@@ -376,12 +385,10 @@ function parseVersionsSection(
   };
 }
 
-function loadGateSettings(repositoryRoot: string): SettingsLoadResult {
-  const raw = readSettingsBytes(join(repositoryRoot, GATE_SETTINGS_FILE));
-  if (!raw.ok) return raw;
+export function parseGateSettingsText(rawText: string): SettingsLoadResult {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw.text);
+    parsed = JSON.parse(rawText);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return {
@@ -415,6 +422,12 @@ function loadGateSettings(repositoryRoot: string): SettingsLoadResult {
       versions,
     }),
   };
+}
+
+function loadGateSettings(repositoryRoot: string): SettingsLoadResult {
+  const raw = readSettingsBytes(join(repositoryRoot, GATE_SETTINGS_FILE));
+  if (!raw.ok) return raw;
+  return parseGateSettingsText(raw.text);
 }
 
 export function resolveRepositoryAndSettings(

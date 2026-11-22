@@ -173,8 +173,8 @@ export function changeNoteAddCommand(state: GatesState) {
           repeatable: true,
           value: {
             kind: "string",
-            minLength: 1,
-            maxLength: 128,
+            minLength: 0,
+            maxLength: 1024,
             choices: null,
             pattern: null,
           },
