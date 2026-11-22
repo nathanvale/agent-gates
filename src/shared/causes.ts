@@ -22,6 +22,15 @@ export const unchangedSuccess =
 export const completedSuccess =
   "SUCCESS_COMPLETED" satisfies keyof typeof commonCauses;
 
+const usageRefused = {
+  outcome: "refused",
+  transactionState: "unchanged",
+  failureClass: "usage",
+  exitCode: 2,
+  retryable: false,
+  guidance: "next",
+} as const;
+
 const refusedNext = {
   outcome: "refused",
   transactionState: "unchanged",
@@ -35,6 +44,7 @@ const refusedHandoff = { ...refusedNext, guidance: "handoff" } as const;
 
 export const causes = {
   ...commonCauses,
+  USAGE_GATES_INVALID_ARGUMENT: usageRefused,
   DOMAIN_GATES_REPOSITORY_NOT_FOUND: refusedNext,
   DOMAIN_GATES_SETTINGS_MISSING: refusedNext,
   DOMAIN_GATES_SETTINGS_INVALID: refusedNext,

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   commitFiles,
   createSandboxTracker,
+  envelopeMessage,
   git,
   makeCustomRepo,
   runGatesCli,
@@ -371,5 +372,40 @@ describe("Per-commit ancestry tracking (copy-then-edit, merged renames, destinat
 
     const checked = checkMain(repo, stateDir);
     expect(checked.exitCode).toBe(0);
+  });
+
+  test("P1 (r12): oversized >=4 MiB base note renamed and minified cannot bypass R8", () => {
+    const { repo, stateDir } = makeCustomRepo(sandbox, {
+      changeNotes: {
+        folder: "change-notes",
+        shippedFolders: ["src"],
+        affects: ["cli"],
+      },
+    });
+    const baseNote = {
+      kind: "fixed",
+      breaking: false,
+      affects: ["cli"],
+      summary: "Oversized base note.",
+      action: null,
+    };
+    const paddedBaseNote = `${JSON.stringify(baseNote, null, 2)}${" ".repeat(4 * 1024 * 1024)}\n`;
+    commitFiles(repo, "base with oversized change note", {
+      "src/app.ts": "export const v = 1;\n",
+      "change-notes/2026-11-01-oversized.json": paddedBaseNote,
+    });
+    git(repo, "checkout", "-b", "rename-minify-oversized");
+    git(repo, "rm", "-q", "change-notes/2026-11-01-oversized.json");
+    commitFiles(repo, "replace oversized note with minified copy and ship", {
+      "src/app.ts": "export const v = 2;\n",
+      "change-notes/2026-11-22-minified.json": `${JSON.stringify(baseNote)}\n`,
+    });
+
+    const checked = checkMain(repo, stateDir);
+    expect(checked.exitCode).toBe(3);
+    expect(checked.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_GIT_FAILED" },
+    });
+    expect(envelopeMessage(checked.envelope)).toContain("Repair:");
   });
 });

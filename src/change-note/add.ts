@@ -41,9 +41,28 @@ type AddInput = {
 };
 
 function failPrepared<
-  Code extends "DOMAIN_GATES_NOTE_INVALID" | "DOMAIN_GATES_FILE_EXISTS",
+  Code extends
+    | "USAGE_GATES_INVALID_ARGUMENT"
+    | "DOMAIN_GATES_NOTE_INVALID"
+    | "DOMAIN_GATES_FILE_EXISTS",
 >(causeCode: Code, message: string) {
   return { ok: false as const, causeCode, message };
+}
+
+function nextStationFields(
+  trigger: string,
+  repairAction: string,
+  instruction: string,
+  observable: string,
+) {
+  return {
+    ...stationWords,
+    commandIdentity: identity,
+    trigger,
+    repairAction,
+    guidance: { next: { kind: "instruction", text: instruction } },
+    independentObservable: `${identity}:${observable}`,
+  } as const;
 }
 
 function prepareNoteWrite(input: AddInput) {
@@ -56,12 +75,12 @@ function prepareNoteWrite(input: AddInput) {
   const date = input["--date"] ?? formatLocalIsoDate(new Date());
   if (!isValidIsoDate(date))
     return failPrepared(
-      "DOMAIN_GATES_NOTE_INVALID",
+      "USAGE_GATES_INVALID_ARGUMENT",
       `Invalid date "${date}". Repair: pass --date YYYY-MM-DD with a real calendar date.`,
     );
   if (!isValidSlug(input["--slug"]))
     return failPrepared(
-      "DOMAIN_GATES_NOTE_INVALID",
+      "USAGE_GATES_INVALID_ARGUMENT",
       `Invalid slug "${input["--slug"]}". Repair: use lowercase letters, digits, and single hyphens.`,
     );
   const file = `${date}-${input["--slug"]}.json`;
@@ -236,81 +255,58 @@ export function changeNoteAddCommand(state: GatesState) {
         independentObservable: `${identity}:written`,
       }),
       station(causes, {
-        ...stationWords,
-        commandIdentity: identity,
+        causeCode: "USAGE_GATES_INVALID_ARGUMENT",
+        ...nextStationFields(
+          "A flag value failed calendar date or slug validation.",
+          "Pass a real YYYY-MM-DD calendar date to --date and a lowercase kebab-case slug to --slug.",
+          "Fix the invalid flag value and run change-note add again.",
+          "invalid-argument",
+        ),
+      }),
+      station(causes, {
         causeCode: "DOMAIN_GATES_REPOSITORY_NOT_FOUND",
-        trigger: "No repository root was found for the command.",
-        repairAction:
+        ...nextStationFields(
+          "No repository root was found for the command.",
           "Run inside a repository or pass an existing directory to --repository.",
-        guidance: {
-          next: {
-            kind: "instruction",
-            text: "Pass --repository with an existing repository root directory.",
-          },
-        },
-        independentObservable: `${identity}:repository-not-found`,
+          "Pass --repository with an existing repository root directory.",
+          "repository-not-found",
+        ),
       }),
       station(causes, {
-        ...stationWords,
-        commandIdentity: identity,
         causeCode: "DOMAIN_GATES_SETTINGS_MISSING",
-        trigger: "The repository has no agent-gates.json settings file.",
-        repairAction:
+        ...nextStationFields(
+          "The repository has no agent-gates.json settings file.",
           "Add agent-gates.json at the repository root declaring changeNotes settings.",
-        guidance: {
-          next: {
-            kind: "instruction",
-            text: "Create agent-gates.json at the repository root, then run change-note add again.",
-          },
-        },
-        independentObservable: `${identity}:settings-missing`,
+          "Create agent-gates.json at the repository root, then run change-note add again.",
+          "settings-missing",
+        ),
       }),
       station(causes, {
-        ...stationWords,
-        commandIdentity: identity,
         causeCode: "DOMAIN_GATES_SETTINGS_INVALID",
-        trigger: "The repository's agent-gates.json failed validation.",
-        repairAction:
+        ...nextStationFields(
+          "The repository's agent-gates.json failed validation.",
           "Repair the field named in the error message in agent-gates.json.",
-        guidance: {
-          next: {
-            kind: "instruction",
-            text: "Fix agent-gates.json and run change-note add again.",
-          },
-        },
-        independentObservable: `${identity}:settings-invalid`,
+          "Fix agent-gates.json and run change-note add again.",
+          "settings-invalid",
+        ),
       }),
       station(causes, {
-        ...stationWords,
-        commandIdentity: identity,
         causeCode: "DOMAIN_GATES_NOTE_INVALID",
-        trigger:
-          "The note date, slug, breaking action, affects words, or summary violated change note rules.",
-        repairAction:
+        ...nextStationFields(
+          "The note breaking action, affects words, or summary violated change note rules.",
           "Repair the note input named in the message and run change-note add again.",
-        guidance: {
-          next: {
-            kind: "instruction",
-            text: "Adjust the note flags to satisfy change note rules and rerun.",
-          },
-        },
-        independentObservable: `${identity}:note-invalid`,
+          "Adjust the note flags to satisfy change note rules and rerun.",
+          "note-invalid",
+        ),
       }),
       station(causes, {
-        ...stationWords,
-        commandIdentity: identity,
         causeCode: "DOMAIN_GATES_FILE_EXISTS",
-        trigger:
+        ...nextStationFields(
           "The target change note file already exists or the change notes folder is not a plain folder.",
-        repairAction:
           "Choose a different --slug or inspect the existing file before retrying.",
-        guidance: {
-          next: {
-            kind: "instruction",
-            text: "Pick a distinct --slug or remove the conflicting path.",
-          },
-        },
-        independentObservable: `${identity}:file-exists`,
+          "Pick a distinct --slug or remove the conflicting path.",
+          "file-exists",
+        ),
       }),
       station(causes, {
         ...stationWords,

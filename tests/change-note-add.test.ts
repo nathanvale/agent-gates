@@ -153,23 +153,14 @@ describe("agent-gates change-note add (R1-R7, R16, R19, R23, R25)", () => {
         "Internal cleanup.",
       ],
       ["--slug", "blank-summary", "--kind", "none", "--summary", "   "],
-      [
-        "--slug",
-        "not-leap",
-        "--kind",
-        "none",
-        "--summary",
-        "Internal.",
-        "--date",
-        "2026-02-29",
-      ],
     ]) {
       const res = runGatesCli(
         [
           "change-note",
           "add",
           ...args,
-          ...(args.includes("--date") ? [] : ["--date", "2026-11-22"]),
+          "--date",
+          "2026-11-22",
           "--repository",
           repo,
           "--json",
@@ -182,6 +173,29 @@ describe("agent-gates change-note add (R1-R7, R16, R19, R23, R25)", () => {
       });
       expect(envelopeMessage(res.envelope)).toContain("Repair:");
     }
+    const impossibleDate = runGatesCli(
+      [
+        "change-note",
+        "add",
+        "--slug",
+        "not-leap",
+        "--kind",
+        "none",
+        "--summary",
+        "Internal.",
+        "--date",
+        "2026-02-29",
+        "--repository",
+        repo,
+        "--json",
+      ],
+      { cwd: repo, stateDir },
+    );
+    expect(impossibleDate.exitCode).toBe(2);
+    expect(impossibleDate.envelope).toMatchObject({
+      result: { causeCode: "USAGE_GATES_INVALID_ARGUMENT" },
+    });
+    expect(envelopeMessage(impossibleDate.envelope)).toContain("Repair:");
     expect(existsSync(join(repo, "change-notes"))).toBe(false);
 
     const noSettingsDir = sandbox.folder("no-settings-");

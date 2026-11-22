@@ -36,6 +36,7 @@ async function readBlobFingerprint(
   path: string,
   blob: string,
   allowedAffects: ReadonlySet<string>,
+  onOversized: "refuse" | "skip",
 ): Promise<GitResult<string | undefined>> {
   const sized = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
     "-s",
@@ -43,8 +44,14 @@ async function readBlobFingerprint(
   ]);
   if (!sized.ok) return sized;
   const byteSize = Number(sized.value.trim());
-  if (!Number.isFinite(byteSize) || byteSize >= gitOutputLimitBytes)
+  if (!Number.isFinite(byteSize) || byteSize >= gitOutputLimitBytes) {
+    if (onOversized === "refuse")
+      return {
+        ok: false,
+        problem: `${path}: exceeds the ${String(gitOutputLimitBytes)}-byte change note read limit (${sized.value.trim()} bytes), so note ancestry cannot be verified. Repair: keep change notes under ${String(gitOutputLimitBytes)} bytes.`,
+      };
     return { ok: true, value: undefined };
+  }
   const content = await runReadOnlyGit(programs, parsePath, root, "cat-file", [
     "blob",
     blob,
@@ -115,6 +122,7 @@ async function collectFolderNotes(
       entry.path,
       entry.blob,
       allowedAffects,
+      "refuse",
     );
     if (!fp.ok) return fp;
     if (fp.value !== undefined) state.fingerprints.add(fp.value);
@@ -142,6 +150,7 @@ async function recordEditedAncestor(
     path,
     blob,
     allowedAffects,
+    "refuse",
   );
   if (!fp.ok) return fp;
   if (fp.value !== undefined) next.fingerprints.add(fp.value);
@@ -194,6 +203,16 @@ async function applyNonAddEntry(
   return { ok: true, value: undefined };
 }
 
+function isInAnyNoteFolder(
+  noteFolders: ReadonlySet<string>,
+  path: string,
+): boolean {
+  for (const folder of noteFolders) {
+    if (isNotePath(folder, path)) return true;
+  }
+  return false;
+}
+
 async function applyAddedEntry(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
@@ -201,6 +220,7 @@ async function applyAddedEntry(
   next: CommitAncestry,
   entry: DiffEntry,
   allowedAffects: ReadonlySet<string>,
+  noteFolders: ReadonlySet<string>,
 ): Promise<GitResult<undefined>> {
   if (!isPlainGitFileMode(entry.mode) || entry.blob === "")
     return { ok: true, value: undefined };
@@ -216,6 +236,7 @@ async function applyAddedEntry(
     entry.path,
     entry.blob,
     allowedAffects,
+    isInAnyNoteFolder(noteFolders, entry.path) ? "refuse" : "skip",
   );
   if (!fp.ok) return fp;
   if (fp.value !== undefined && next.fingerprints.has(fp.value)) {
@@ -265,6 +286,7 @@ async function applyParentEdge(
   commitOid: string,
   parentState: CommitAncestry,
   allowedAffects: ReadonlySet<string>,
+  noteFolders: ReadonlySet<string>,
 ): Promise<GitResult<CommitAncestry>> {
   const diff = await diffResolvedRange(
     programs,
@@ -300,6 +322,7 @@ async function applyParentEdge(
       next,
       entry,
       allowedAffects,
+      noteFolders,
     );
     if (!applied.ok) return applied;
   }
@@ -313,6 +336,7 @@ async function trackAncestryGraph(
   fromOid: string,
   toOid: string,
   allowedAffects: ReadonlySet<string>,
+  noteFolders: ReadonlySet<string>,
   baseState: CommitAncestry,
 ): Promise<GitResult<CommitAncestry>> {
   if (baseState.paths.size === 0 || fromOid === toOid)
@@ -338,6 +362,7 @@ async function trackAncestryGraph(
         commit,
         parentState,
         allowedAffects,
+        noteFolders,
       );
       if (!next.ok) return next;
       mergeCommitAncestry(ancestryByCommit, commit, next.value);
@@ -384,7 +409,9 @@ async function readTreeNoteHistory(
   )
     return { ok: false, problem: priorSettings.message };
   const combinedAffects = new Set(settings.changeNotes.affects);
+  const noteFolders = new Set([settings.changeNotes.folder]);
   if (priorSettings.ok) {
+    noteFolders.add(priorSettings.settings.changeNotes.folder);
     for (const word of priorSettings.settings.changeNotes.affects)
       combinedAffects.add(word);
     const sameFolder =
@@ -412,6 +439,7 @@ async function readTreeNoteHistory(
     treeCommitOid,
     headOid,
     combinedAffects,
+    noteFolders,
     baseState,
   );
   if (!finalState.ok) return finalState;
