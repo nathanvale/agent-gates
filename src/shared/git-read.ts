@@ -43,7 +43,7 @@ export type BlobCandidate = {
 
 const gitTimeoutMilliseconds = 10_000;
 const gitShutdownMilliseconds = 1_000;
-const gitOutputLimitBytes = 4 * 1024 * 1024;
+export const gitOutputLimitBytes = 4 * 1024 * 1024;
 const replacementCharacter = "\uFFFD";
 const commitOidPattern = /^[0-9a-f]{40,64}$/;
 
