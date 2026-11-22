@@ -126,7 +126,6 @@ async function recordEditedAncestor(
   if (!isPlainGitFileMode(mode) || blob === "")
     return { ok: true, value: undefined };
   next.blobs.add(blob);
-  if (!path.endsWith(".json")) return { ok: true, value: undefined };
   const fp = await readBlobFingerprint(
     programs,
     parsePath,
@@ -201,7 +200,6 @@ async function applyAddedEntry(
     next.blobs.add(entry.blob);
     return { ok: true, value: undefined };
   }
-  if (!entry.path.endsWith(".json")) return { ok: true, value: undefined };
   const fp = await readBlobFingerprint(
     programs,
     parsePath,

@@ -314,4 +314,37 @@ describe("Per-commit ancestry tracking (copy-then-edit, merged renames, destinat
       result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
     });
   });
+
+  test("P1 (r10): renaming ancestral note to non-.json, editing it, then moving back minified still fails R8", () => {
+    const { repo, stateDir } = makeBaseRepo();
+    git(repo, "checkout", "-b", "non-json-detour");
+    git(repo, "mv", "change-notes/2026-11-20-old.json", "archive.txt");
+    git(repo, "commit", "-q", "-m", "move note to archive.txt");
+
+    const editedPayload = {
+      kind: "fixed",
+      breaking: false,
+      affects: ["cli"],
+      summary: "Edited while parked at archive.txt.",
+      action: null,
+    };
+    commitFiles(repo, "edit parked archive.txt", {
+      "archive.txt": `${JSON.stringify(editedPayload, null, 2)}\n`,
+    });
+    git(repo, "mv", "archive.txt", "change-notes/2026-11-22-returned.json");
+    writeTreeFile(
+      repo,
+      "change-notes/2026-11-22-returned.json",
+      JSON.stringify(editedPayload),
+    );
+    writeTreeFile(repo, "src/app.ts", "export const v = 2;\n");
+    git(repo, "add", "change-notes/2026-11-22-returned.json", "src/app.ts");
+    git(repo, "commit", "-q", "-m", "move back minified with shipped edit");
+
+    const checked = checkMain(repo, stateDir);
+    expect(checked.exitCode).toBe(3);
+    expect(checked.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
+    });
+  });
 });
