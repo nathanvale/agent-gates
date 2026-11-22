@@ -118,11 +118,13 @@ async function recordEditedAncestor(
   parsePath: (value: string) => ParsedPath,
   root: string,
   next: CommitAncestry,
+  mode: string,
   path: string,
   blob: string,
   allowedAffects: ReadonlySet<string>,
 ): Promise<GitResult<undefined>> {
-  if (blob === "") return { ok: true, value: undefined };
+  if (!isPlainGitFileMode(mode) || blob === "")
+    return { ok: true, value: undefined };
   next.blobs.add(blob);
   if (!path.endsWith(".json")) return { ok: true, value: undefined };
   const fp = await readBlobFingerprint(
@@ -161,17 +163,22 @@ async function applyNonAddEntry(
       parsePath,
       root,
       next,
+      entry.mode,
       entry.path,
       entry.blob,
       allowedAffects,
     );
   }
-  if (entry.status === "M" && parent.paths.has(entry.path))
+  if (
+    (entry.status === "M" || entry.status === "T") &&
+    parent.paths.has(entry.path)
+  )
     return recordEditedAncestor(
       programs,
       parsePath,
       root,
       next,
+      entry.mode,
       entry.path,
       entry.blob,
       allowedAffects,
