@@ -235,6 +235,16 @@ export function parseChangeNote(
   };
 }
 
+export function canonicalChangeNoteKey(note: ChangeNote): string {
+  return JSON.stringify({
+    kind: note.kind,
+    breaking: note.breaking,
+    affects: [...note.affects],
+    summary: note.summary,
+    action: note.action,
+  });
+}
+
 export function formatChangeNoteJson(note: ChangeNote): string {
   const inlineAffects = `  "affects": [${note.affects.map((item) => JSON.stringify(item)).join(", ")}],`;
   const affectsLines =

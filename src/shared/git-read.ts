@@ -1,6 +1,7 @@
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
 import { programDetails } from "agent-cli-kernel/addons/programs";
 import {
+  canonicalChangeNoteKey,
   type ChangeNoteEntry,
   isChangeNoteFile,
   parseChangeNote,
@@ -11,7 +12,12 @@ import {
   parseGateSettingsText,
 } from "./settings.ts";
 
-type GitReadCommand = "diff" | "cat-file" | "ls-tree" | "rev-parse";
+type GitReadCommand =
+  | "diff"
+  | "cat-file"
+  | "ls-tree"
+  | "rev-parse"
+  | "merge-base";
 
 type DiffEntry = {
   readonly mode: string;
@@ -247,7 +253,12 @@ export async function diffBaseToHead(
   root: string,
   base: string,
   headOid: string,
-): Promise<GitResult<readonly DiffEntry[]>> {
+): Promise<
+  GitResult<{
+    readonly baseOid: string;
+    readonly entries: readonly DiffEntry[];
+  }>
+> {
   const baseOid = await resolveCommitOid(programs, parsePath, root, base);
   if (!baseOid.ok) return baseOid;
   const range = `${baseOid.value}...${headOid}`;
@@ -263,7 +274,66 @@ export async function diffBaseToHead(
     range,
   ]);
   if (!ran.ok) return ran;
-  return parseDiffEntries(ran.value, range);
+  const entries = parseDiffEntries(ran.value, range);
+  if (!entries.ok) return entries;
+  return {
+    ok: true,
+    value: { baseOid: baseOid.value, entries: entries.value },
+  };
+}
+
+export async function readBaseNoteFingerprints(
+  programs: ProgramsCapability,
+  parsePath: (value: string) => ParsedPath,
+  root: string,
+  baseOid: string,
+  headOid: string,
+  settings: GateSettings,
+): Promise<GitResult<ReadonlySet<string>>> {
+  const mergeBase = await runReadOnlyGit(
+    programs,
+    parsePath,
+    root,
+    "merge-base",
+    [baseOid, headOid],
+  );
+  if (!mergeBase.ok) return mergeBase;
+  const mergeBaseOid = mergeBase.value.trim();
+  const notesFolder = settings.changeNotes.folder;
+  const listed = await runReadOnlyGit(programs, parsePath, root, "ls-tree", [
+    "-r",
+    "-z",
+    "--full-tree",
+    mergeBaseOid,
+    "--",
+    notesFolder,
+  ]);
+  if (!listed.ok) return listed;
+  const fingerprints = new Set<string>();
+  for (const record of splitNul(listed.value)) {
+    const tab = record.indexOf("\t");
+    if (tab < 0) continue;
+    const header = record.slice(0, tab);
+    const path = record.slice(tab + 1);
+    if (!isNotePath(notesFolder, path)) continue;
+    const [mode = "", type = "", blob = ""] = header.split(" ");
+    if (type !== "blob" || !isPlainGitFileMode(mode) || blob === "") continue;
+    const content = await runReadOnlyGit(
+      programs,
+      parsePath,
+      root,
+      "cat-file",
+      ["blob", blob],
+    );
+    if (!content.ok) return content;
+    const parsed = parseChangeNote(
+      path,
+      content.value,
+      settings.changeNotes.affects,
+    );
+    if (parsed.ok) fingerprints.add(canonicalChangeNoteKey(parsed.note));
+  }
+  return { ok: true, value: fingerprints };
 }
 
 export async function readCommittedGateSettings(
