@@ -40,9 +40,27 @@ type FingerprintRead =
   | { readonly kind: "ok"; readonly fingerprint: string | undefined }
   | { readonly kind: "oversized"; readonly byteSize: string };
 
-function oversizedProblem(path: string, byteSize: string): string {
-  return `${path}: exceeds the ${String(gitOutputLimitBytes)}-byte change note read limit (${byteSize} bytes), so note ancestry cannot be verified. Repair: keep change notes under ${String(gitOutputLimitBytes)} bytes.`;
+function cloneAncestry(source?: CommitAncestry): CommitAncestry {
+  return {
+    paths: new Set(source?.paths),
+    oversizedPaths: new Set(source?.oversizedPaths),
+    oversizedBlobs: new Set(source?.oversizedBlobs),
+    blobs: new Set(source?.blobs),
+    fingerprints: new Set(source?.fingerprints),
+  };
 }
+
+function oversizedFailure(
+  path: string,
+  byteSize = `>=${String(gitOutputLimitBytes)}`,
+): GitResult<never> {
+  return {
+    ok: false,
+    problem: `${path}: exceeds the ${String(gitOutputLimitBytes)}-byte change note read limit (${byteSize} bytes), so note ancestry cannot be verified. Repair: keep change notes under ${String(gitOutputLimitBytes)} bytes.`,
+  };
+}
+
+const okVoid: GitResult<undefined> = { ok: true, value: undefined };
 
 function gitRun(
   git: GitReader,
@@ -50,6 +68,15 @@ function gitRun(
   args: readonly string[],
 ) {
   return runReadOnlyGit(git.programs, git.parsePath, git.root, command, args);
+}
+
+function readSettingsAt(git: GitReader, commitOid: string) {
+  return readCommittedGateSettings(
+    git.programs,
+    git.parsePath,
+    git.root,
+    commitOid,
+  );
 }
 
 async function readBlobFingerprint(
@@ -115,14 +142,11 @@ async function collectFolderNotes(
     const fp = await readBlobFingerprint(git, entry.blob);
     if (!fp.ok) return fp;
     if (fp.value.kind === "oversized")
-      return {
-        ok: false,
-        problem: oversizedProblem(entry.path, fp.value.byteSize),
-      };
+      return oversizedFailure(entry.path, fp.value.byteSize);
     if (fp.value.fingerprint !== undefined)
       state.fingerprints.add(fp.value.fingerprint);
   }
-  return { ok: true, value: undefined };
+  return okVoid;
 }
 
 function isInAnyNoteFolder(
@@ -141,23 +165,18 @@ async function recordTrackedBlob(
   entry: DiffEntry,
   refuseOversized: boolean,
 ): Promise<GitResult<undefined>> {
-  if (!isPlainGitFileMode(entry.mode) || entry.blob === "")
-    return { ok: true, value: undefined };
+  if (!isPlainGitFileMode(entry.mode) || entry.blob === "") return okVoid;
   const fp = await readBlobFingerprint(git, entry.blob);
   if (!fp.ok) return fp;
   if (fp.value.kind === "oversized") {
-    if (refuseOversized)
-      return {
-        ok: false,
-        problem: oversizedProblem(entry.path, fp.value.byteSize),
-      };
+    if (refuseOversized) return oversizedFailure(entry.path, fp.value.byteSize);
     next.oversizedBlobs.add(entry.blob);
-    return { ok: true, value: undefined };
+    return okVoid;
   }
   next.blobs.add(entry.blob);
   if (fp.value.fingerprint !== undefined)
     next.fingerprints.add(fp.value.fingerprint);
-  return { ok: true, value: undefined };
+  return okVoid;
 }
 
 function applyRenamePaths(
@@ -189,12 +208,12 @@ async function applyNonAddEntry(
   if (entry.status === "D") {
     next.paths.delete(entry.path);
     next.oversizedPaths.delete(entry.path);
-    return { ok: true, value: undefined };
+    return okVoid;
   }
   if (entry.status.startsWith("R")) {
-    if (entry.oldPath === undefined) return { ok: true, value: undefined };
+    if (entry.oldPath === undefined) return okVoid;
     const tracked = applyRenamePaths(parent, next, entry.oldPath, entry.path);
-    if (tracked === "none") return { ok: true, value: undefined };
+    if (tracked === "none") return okVoid;
     return recordTrackedBlob(
       git,
       next,
@@ -202,11 +221,9 @@ async function applyNonAddEntry(
       tracked === "ancestor" || isInAnyNoteFolder(noteFolders, entry.path),
     );
   }
-  if (entry.status !== "M" && entry.status !== "T")
-    return { ok: true, value: undefined };
+  if (entry.status !== "M" && entry.status !== "T") return okVoid;
   const isAncestor = parent.paths.has(entry.path);
-  if (!isAncestor && !parent.oversizedPaths.has(entry.path))
-    return { ok: true, value: undefined };
+  if (!isAncestor && !parent.oversizedPaths.has(entry.path)) return okVoid;
   return recordTrackedBlob(
     git,
     next,
@@ -215,43 +232,37 @@ async function applyNonAddEntry(
   );
 }
 
-async function applyAddedEntry(
+function trackOversizedEntry(
+  next: CommitAncestry,
+  entry: DiffEntry,
+  noteFolders: ReadonlySet<string>,
+  byteSize?: string,
+): GitResult<undefined> {
+  if (isInAnyNoteFolder(noteFolders, entry.path))
+    return oversizedFailure(entry.path, byteSize);
+  next.oversizedPaths.add(entry.path);
+  next.oversizedBlobs.add(entry.blob);
+  return okVoid;
+}
+
+async function applyUntrackedEntry(
   git: GitReader,
   next: CommitAncestry,
   entry: DiffEntry,
   noteFolders: ReadonlySet<string>,
 ): Promise<GitResult<undefined>> {
-  if (!isPlainGitFileMode(entry.mode) || entry.blob === "")
-    return { ok: true, value: undefined };
+  if (!isPlainGitFileMode(entry.mode) || entry.blob === "") return okVoid;
   if (next.blobs.has(entry.blob)) {
     next.paths.add(entry.path);
     next.blobs.add(entry.blob);
-    return { ok: true, value: undefined };
+    return okVoid;
   }
-  if (next.oversizedBlobs.has(entry.blob)) {
-    if (isInAnyNoteFolder(noteFolders, entry.path))
-      return {
-        ok: false,
-        problem: oversizedProblem(
-          entry.path,
-          `>=${String(gitOutputLimitBytes)}`,
-        ),
-      };
-    next.oversizedPaths.add(entry.path);
-    return { ok: true, value: undefined };
-  }
+  if (next.oversizedBlobs.has(entry.blob))
+    return trackOversizedEntry(next, entry, noteFolders);
   const fp = await readBlobFingerprint(git, entry.blob);
   if (!fp.ok) return fp;
-  if (fp.value.kind === "oversized") {
-    if (isInAnyNoteFolder(noteFolders, entry.path))
-      return {
-        ok: false,
-        problem: oversizedProblem(entry.path, fp.value.byteSize),
-      };
-    next.oversizedPaths.add(entry.path);
-    next.oversizedBlobs.add(entry.blob);
-    return { ok: true, value: undefined };
-  }
+  if (fp.value.kind === "oversized")
+    return trackOversizedEntry(next, entry, noteFolders, fp.value.byteSize);
   if (
     fp.value.fingerprint !== undefined &&
     next.fingerprints.has(fp.value.fingerprint)
@@ -259,7 +270,7 @@ async function applyAddedEntry(
     next.paths.add(entry.path);
     next.blobs.add(entry.blob);
   }
-  return { ok: true, value: undefined };
+  return okVoid;
 }
 
 function mergeCommitAncestry(
@@ -298,27 +309,29 @@ async function recordIntermediateSettingsFolder(
   git: GitReader,
   commitOid: string,
   entries: readonly DiffEntry[],
+  next: CommitAncestry,
   noteFolders: Set<string>,
 ): Promise<GitResult<undefined>> {
   const touched = entries.some(
     (entry) =>
       entry.path === GATE_SETTINGS_FILE || entry.oldPath === GATE_SETTINGS_FILE,
   );
-  if (!touched) return { ok: true, value: undefined };
-  const commitSettings = await readCommittedGateSettings(
-    git.programs,
-    git.parsePath,
-    git.root,
-    commitOid,
-  );
+  if (!touched) return okVoid;
+  const commitSettings = await readSettingsAt(git, commitOid);
   if (
     !commitSettings.ok &&
     commitSettings.causeCode === "DOMAIN_GATES_GIT_FAILED"
   )
     return { ok: false, problem: commitSettings.message };
-  if (commitSettings.ok)
-    noteFolders.add(commitSettings.settings.changeNotes.folder);
-  return { ok: true, value: undefined };
+  if (commitSettings.ok) {
+    const folder = commitSettings.settings.changeNotes.folder;
+    noteFolders.add(folder);
+    for (const oversizedPath of next.oversizedPaths) {
+      if (isNotePath(folder, oversizedPath))
+        return oversizedFailure(oversizedPath);
+    }
+  }
+  return okVoid;
 }
 
 async function applyParentEdge(
@@ -335,20 +348,15 @@ async function applyParentEdge(
     `${parentOid}..${commitOid}`,
   );
   if (!diff.ok) return diff;
+  const next = cloneAncestry(parentState);
   const recorded = await recordIntermediateSettingsFolder(
     git,
     commitOid,
     diff.value,
+    next,
     noteFolders,
   );
   if (!recorded.ok) return recorded;
-  const next: CommitAncestry = {
-    paths: new Set(parentState.paths),
-    oversizedPaths: new Set(parentState.oversizedPaths),
-    oversizedBlobs: new Set(parentState.oversizedBlobs),
-    blobs: new Set(parentState.blobs),
-    fingerprints: new Set(parentState.fingerprints),
-  };
   for (const entry of diff.value) {
     if (entry.status === "A") continue;
     const applied = await applyNonAddEntry(
@@ -361,8 +369,12 @@ async function applyParentEdge(
     if (!applied.ok) return applied;
   }
   for (const entry of diff.value) {
-    if (entry.status !== "A") continue;
-    const applied = await applyAddedEntry(git, next, entry, noteFolders);
+    const skipped =
+      entry.status === "D" ||
+      next.paths.has(entry.path) ||
+      next.oversizedPaths.has(entry.path);
+    if (skipped) continue;
+    const applied = await applyUntrackedEntry(git, next, entry, noteFolders);
     if (!applied.ok) return applied;
   }
   return { ok: true, value: next };
@@ -413,13 +425,7 @@ async function readTreeNoteHistory(
   headOid: string,
   settings: GateSettings,
 ): Promise<GitResult<BaseNoteHistory>> {
-  const baseState: CommitAncestry = {
-    paths: new Set(),
-    oversizedPaths: new Set(),
-    oversizedBlobs: new Set(),
-    blobs: new Set(),
-    fingerprints: new Set(),
-  };
+  const baseState = cloneAncestry();
   const headScan = await collectFolderNotes(
     git,
     treeCommitOid,
@@ -427,12 +433,7 @@ async function readTreeNoteHistory(
     baseState,
   );
   if (!headScan.ok) return headScan;
-  const priorSettings = await readCommittedGateSettings(
-    git.programs,
-    git.parsePath,
-    git.root,
-    treeCommitOid,
-  );
+  const priorSettings = await readSettingsAt(git, treeCommitOid);
   if (
     !priorSettings.ok &&
     priorSettings.causeCode === "DOMAIN_GATES_GIT_FAILED"

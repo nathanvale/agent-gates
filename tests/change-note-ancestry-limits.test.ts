@@ -240,4 +240,45 @@ describe("Ancestry size limits and intermediate settings transitions", () => {
       result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
     });
   });
+
+  test("P1 (r14): overwriting an existing untracked file via M with a base note copy, then editing and moving in still fails R8", () => {
+    const { repo, stateDir } = makeBaseRepo();
+    commitFiles(repo, "seed unrelated scratch file on main", {
+      "scratch.txt": "placeholder\n",
+    });
+    git(repo, "checkout", "-b", "modify-untracked-copy");
+    commitFiles(repo, "overwrite scratch.txt with reformatted base note", {
+      "scratch.txt": `${JSON.stringify({
+        kind: "added",
+        breaking: false,
+        affects: ["cli"],
+        summary: "Old base note.",
+        action: null,
+      })}\n`,
+    });
+    commitFiles(repo, "edit copied note in scratch.txt", {
+      "scratch.txt": `${JSON.stringify({
+        kind: "added",
+        breaking: false,
+        affects: ["cli"],
+        summary: "Edited copy from modified file.",
+        action: null,
+      })}\n`,
+    });
+    git(
+      repo,
+      "mv",
+      "scratch.txt",
+      "change-notes/2026-11-22-from-modified.json",
+    );
+    writeTreeFile(repo, "src/app.ts", "export const v = 2;\n");
+    git(repo, "add", "src/app.ts");
+    git(repo, "commit", "-q", "-m", "move modified copy into change-notes");
+
+    const checked = checkMain(repo, stateDir);
+    expect(checked.exitCode).toBe(3);
+    expect(checked.envelope).toMatchObject({
+      result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
+    });
+  });
 });
