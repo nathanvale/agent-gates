@@ -215,7 +215,7 @@ function parseDiffEntries(
   return { ok: true, value: entries };
 }
 
-async function resolveCommitOid(
+export async function resolveCommitOid(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
@@ -246,16 +246,16 @@ export async function diffBaseToHead(
   parsePath: (value: string) => ParsedPath,
   root: string,
   base: string,
+  headOid: string,
 ): Promise<GitResult<readonly DiffEntry[]>> {
   const baseOid = await resolveCommitOid(programs, parsePath, root, base);
   if (!baseOid.ok) return baseOid;
-  const headOid = await resolveCommitOid(programs, parsePath, root, "HEAD");
-  if (!headOid.ok) return headOid;
-  const range = `${baseOid.value}...${headOid.value}`;
+  const range = `${baseOid.value}...${headOid}`;
   const ran = await runReadOnlyGit(programs, parsePath, root, "diff", [
     "--raw",
     "--no-abbrev",
     "--find-renames",
+    "--ignore-submodules=none",
     "--no-ext-diff",
     "--no-textconv",
     "--no-relative",
@@ -270,6 +270,7 @@ export async function readCommittedGateSettings(
   programs: ProgramsCapability,
   parsePath: (value: string) => ParsedPath,
   root: string,
+  headOid: string,
 ): Promise<
   | { readonly ok: true; readonly settings: GateSettings }
   | {
@@ -284,7 +285,7 @@ export async function readCommittedGateSettings(
   const listed = await runReadOnlyGit(programs, parsePath, root, "ls-tree", [
     "-z",
     "--full-tree",
-    "HEAD",
+    headOid,
     "--",
     GATE_SETTINGS_FILE,
   ]);

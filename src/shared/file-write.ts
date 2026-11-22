@@ -66,6 +66,20 @@ function verifyFolderAncestors(
   return { ok: true };
 }
 
+function createOrVerifyDirectory(prefix: string, fullPath: string): void {
+  try {
+    mkdirSync(fullPath);
+  } catch (error) {
+    if (errorCode(error) !== "EEXIST") throw error;
+    const stat = lstatSync(fullPath);
+    if (!stat.isDirectory())
+      throw new Error(
+        `${prefix} must be a plain folder, not a symlink or file.`,
+        { cause: error },
+      );
+  }
+}
+
 function ensurePlainFolderTree(root: string, folder: string): void {
   const verified = verifyFolderAncestors(root, folder);
   if (!verified.ok) throw new Error(verified.problem);
@@ -79,7 +93,7 @@ function ensurePlainFolderTree(root: string, folder: string): void {
         );
     } catch (error) {
       if (errorCode(error) !== "ENOENT") throw error;
-      mkdirSync(fullPath);
+      createOrVerifyDirectory(prefix, fullPath);
     }
     if (!isInsideRoot(realRoot, realpathSync.native(fullPath)))
       throw new Error(`${prefix} resolves outside the repository root.`);

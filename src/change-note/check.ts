@@ -12,6 +12,7 @@ import {
   isNewlyAddedNote,
   isNotePath,
   readCommittedGateSettings,
+  resolveCommitOid,
   validateCommittedNote,
 } from "../shared/git-read.ts";
 import {
@@ -229,10 +230,26 @@ export function changeNoteCheckCommand(
           },
           { message: repoResult.problem, data: null, effects: nothingChanged },
         );
+      const headOid = await resolveCommitOid(
+        context.programs,
+        parsePath,
+        repoResult.root,
+        "HEAD",
+      );
+      if (!headOid.ok)
+        return context.result(
+          { commandIdentity: identity, causeCode: "DOMAIN_GATES_GIT_FAILED" },
+          {
+            message: `${headOid.problem} Repair: ensure the repository has at least one commit and run again.`,
+            data: null,
+            effects: nothingChanged,
+          },
+        );
       const settingsResult = await readCommittedGateSettings(
         context.programs,
         parsePath,
         repoResult.root,
+        headOid.value,
       );
       if (!settingsResult.ok)
         return context.result(
@@ -252,6 +269,7 @@ export function changeNoteCheckCommand(
         parsePath,
         repoResult.root,
         base,
+        headOid.value,
       );
       if (!diff.ok)
         return context.result(
