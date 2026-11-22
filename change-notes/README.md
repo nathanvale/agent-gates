@@ -8,7 +8,7 @@ Add one JSON file per pull request that changes what this repository ships:
 {
   "kind": "added",
   "breaking": false,
-  "affects": ["cli"],
+  "affects": ["change-note"],
   "summary": "Past-tense summary of what changed for readers.",
   "action": null
 }
