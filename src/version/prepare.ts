@@ -105,14 +105,29 @@ export function versionPrepareCommand(
       station(causes, {
         ...stationWords,
         commandIdentity: prepareIdentity,
-        causeCode: "DOMAIN_GATES_VERSION_INVALID",
-        trigger: "The --lead sentence or --date value is invalid.",
+        causeCode: "USAGE_GATES_INVALID_ARGUMENT",
+        trigger: "The --lead sentence or --date calendar value is invalid.",
         repairAction:
           "Pass a non-empty single-line --lead and a real calendar YYYY-MM-DD --date.",
         guidance: {
           next: {
             kind: "instruction",
             text: "Fix --lead or --date and run version prepare again.",
+          },
+        },
+        independentObservable: `${prepareIdentity}:invalid-argument`,
+      }),
+      station(causes, {
+        ...stationWords,
+        commandIdentity: prepareIdentity,
+        causeCode: "DOMAIN_GATES_VERSION_INVALID",
+        trigger: "The computed version or rendered account failed validation.",
+        repairAction:
+          "Check the latest vX.Y.Z tag and version settings, then run version prepare again.",
+        guidance: {
+          next: {
+            kind: "instruction",
+            text: "Verify repository version tags and settings, then rerun version prepare.",
           },
         },
         independentObservable: `${prepareIdentity}:version-invalid`,

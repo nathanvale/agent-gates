@@ -143,9 +143,9 @@ describe("agent-gates version prepare (R10-R16, R20-R24)", () => {
       ["Valid lead.", "2026-02-29"],
     ] as const) {
       const invalid = prepareVersion(repo, stateDir, lead, date);
-      expect(invalid.exitCode).toBe(3);
+      expect(invalid.exitCode).toBe(2);
       expect(invalid.envelope).toMatchObject({
-        result: { causeCode: "DOMAIN_GATES_VERSION_INVALID" },
+        result: { causeCode: "USAGE_GATES_INVALID_ARGUMENT" },
       });
     }
 

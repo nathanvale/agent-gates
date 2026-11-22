@@ -46,6 +46,7 @@ export type PreparedAccount = {
 type PrepareFailure = {
   readonly ok: false;
   readonly causeCode:
+    | "USAGE_GATES_INVALID_ARGUMENT"
     | "DOMAIN_GATES_REPOSITORY_NOT_FOUND"
     | "DOMAIN_GATES_SETTINGS_MISSING"
     | "DOMAIN_GATES_SETTINGS_INVALID"
@@ -175,14 +176,14 @@ async function validateVersionInputs(
   if (!leadResult.ok)
     return {
       ok: false,
-      causeCode: "DOMAIN_GATES_VERSION_INVALID",
+      causeCode: "USAGE_GATES_INVALID_ARGUMENT",
       message: leadResult.problem,
     };
   const date = input["--date"] ?? formatLocalIsoDate(new Date());
   if (!isValidIsoDate(date))
     return {
       ok: false,
-      causeCode: "DOMAIN_GATES_VERSION_INVALID",
+      causeCode: "USAGE_GATES_INVALID_ARGUMENT",
       message: `Invalid date "${date}". Repair: pass --date YYYY-MM-DD with a real calendar date.`,
     };
   return {
