@@ -40,6 +40,16 @@ type FingerprintRead =
   | { readonly kind: "ok"; readonly fingerprint: string | undefined }
   | { readonly kind: "oversized"; readonly byteSize: string };
 
+function cloneAncestry(source?: CommitAncestry): CommitAncestry {
+  return {
+    paths: new Set(source?.paths),
+    oversizedPaths: new Set(source?.oversizedPaths),
+    oversizedBlobs: new Set(source?.oversizedBlobs),
+    blobs: new Set(source?.blobs),
+    fingerprints: new Set(source?.fingerprints),
+  };
+}
+
 function oversizedProblem(path: string, byteSize: string): string {
   return `${path}: exceeds the ${String(gitOutputLimitBytes)}-byte change note read limit (${byteSize} bytes), so note ancestry cannot be verified. Repair: keep change notes under ${String(gitOutputLimitBytes)} bytes.`;
 }
@@ -50,6 +60,15 @@ function gitRun(
   args: readonly string[],
 ) {
   return runReadOnlyGit(git.programs, git.parsePath, git.root, command, args);
+}
+
+function readSettingsAt(git: GitReader, commitOid: string) {
+  return readCommittedGateSettings(
+    git.programs,
+    git.parsePath,
+    git.root,
+    commitOid,
+  );
 }
 
 async function readBlobFingerprint(
@@ -305,12 +324,7 @@ async function recordIntermediateSettingsFolder(
       entry.path === GATE_SETTINGS_FILE || entry.oldPath === GATE_SETTINGS_FILE,
   );
   if (!touched) return { ok: true, value: undefined };
-  const commitSettings = await readCommittedGateSettings(
-    git.programs,
-    git.parsePath,
-    git.root,
-    commitOid,
-  );
+  const commitSettings = await readSettingsAt(git, commitOid);
   if (
     !commitSettings.ok &&
     commitSettings.causeCode === "DOMAIN_GATES_GIT_FAILED"
@@ -342,13 +356,7 @@ async function applyParentEdge(
     noteFolders,
   );
   if (!recorded.ok) return recorded;
-  const next: CommitAncestry = {
-    paths: new Set(parentState.paths),
-    oversizedPaths: new Set(parentState.oversizedPaths),
-    oversizedBlobs: new Set(parentState.oversizedBlobs),
-    blobs: new Set(parentState.blobs),
-    fingerprints: new Set(parentState.fingerprints),
-  };
+  const next = cloneAncestry(parentState);
   for (const entry of diff.value) {
     if (entry.status === "A") continue;
     const applied = await applyNonAddEntry(
@@ -416,13 +424,7 @@ export async function readTreeNoteHistory(
   settings: GateSettings,
 ): Promise<GitResult<BaseNoteHistory>> {
   const git: GitReader = { programs, parsePath, root };
-  const baseState: CommitAncestry = {
-    paths: new Set(),
-    oversizedPaths: new Set(),
-    oversizedBlobs: new Set(),
-    blobs: new Set(),
-    fingerprints: new Set(),
-  };
+  const baseState = cloneAncestry();
   const headScan = await collectFolderNotes(
     git,
     treeCommitOid,
@@ -430,12 +432,7 @@ export async function readTreeNoteHistory(
     baseState,
   );
   if (!headScan.ok) return headScan;
-  const priorSettings = await readCommittedGateSettings(
-    git.programs,
-    git.parsePath,
-    git.root,
-    treeCommitOid,
-  );
+  const priorSettings = await readSettingsAt(git, treeCommitOid);
   if (
     !priorSettings.ok &&
     priorSettings.causeCode === "DOMAIN_GATES_GIT_FAILED"
