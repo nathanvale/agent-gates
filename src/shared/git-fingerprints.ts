@@ -291,18 +291,11 @@ function mergeCommitAncestry(
 }
 
 function parseRevListParents(output: string) {
-  const rows: {
-    readonly commit: string;
-    readonly parents: readonly string[];
-  }[] = [];
-  for (const line of output.split("\n")) {
-    const [commit = "", ...parents] = line
-      .trim()
-      .split(" ")
-      .filter((part) => part !== "");
-    if (commit !== "") rows.push({ commit, parents });
-  }
-  return rows;
+  return output
+    .split("\n")
+    .map((line) => line.trim().split(" ").filter(Boolean))
+    .filter((parts) => parts.length > 0)
+    .map(([commit = "", ...parents]) => ({ commit, parents }));
 }
 
 async function recordIntermediateSettingsFolder(
