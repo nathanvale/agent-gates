@@ -1,0 +1,39 @@
+{
+  "shared": {
+    "MD013": "Prose in notes and docs is not wrapped to a fixed line length.",
+    "MD033": "not yet decided",
+    "MD041": "Notes, templates, and SKILL.md files may start with YAML front matter instead of a first-line H1.",
+    "MD043": "Requires a per-project heading outline; shared profiles do not impose one.",
+    "MD044": "Requires a per-project proper-names list; shared profiles do not define one.",
+    "MD060": "not yet decided",
+    "MD061": "Requires a per-project forbidden-terms list; shared profiles do not define one.",
+    "MD063": "not yet decided",
+    "MD070": "not yet decided",
+    "MD071": "not yet decided",
+    "MD072": "Front matter keys are ordered semantically (for example name before description and title before created), not alphabetically.",
+    "MD073": "not yet decided",
+    "MD074": "MkDocs-specific rule; neither docs nor Obsidian notes use MkDocs.",
+    "MD076": "not yet decided",
+    "MD078": "Quarto-specific rule; neither docs nor Obsidian notes use Quarto.",
+    "MD079": "Quarto-specific rule; neither docs nor Obsidian notes use Quarto.",
+    "MD080": "not yet decided",
+    "MD082": "not yet decided",
+    "MD083": "not yet decided",
+    "MD084": "not yet decided",
+    "MD085": "not yet decided",
+    "MD087": "not yet decided",
+    "MD088": "not yet decided",
+    "MD089": "not yet decided",
+    "MD090": "not yet decided",
+    "MD091": "not yet decided",
+    "MD093": "not yet decided",
+    "MD095": "not yet decided",
+    "MD096": "not yet decided"
+  },
+  "profiles": {
+    "rumdl-docs.toml": {},
+    "rumdl-notes.toml": {
+      "MD051": "Obsidian heading links use raw percent-encoded heading text rather than GitHub-style slugs."
+    }
+  }
+}
