@@ -10,8 +10,8 @@
   "packageManager": "bun@1.4.4",
   "scripts": {
     "start": "bun run src/cli.ts",
-    "check:change-notes": "bun run src/cli.ts change-note check",
-    "check": "bun run lint && bun run format:check && bun run typecheck && bun run test && bun run --silent quality:fallow && bun run check:change-notes",
+    "check:changesets": "bun run --bun changeset status --since origin/main && bun scripts/check-gated-paths.ts",
+    "check": "bun run lint && bun run format:check && bun run typecheck && bun run test && bun run --silent quality:fallow && bun run check:changesets",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "quality:fallow": "node_modules/.bin/fallow --format json --quiet --type-aware --type-aware-require complete --fail-on-issues --baseline-mode identity --baseline fallow-dead-code-recorded-hits.json --dupes-baseline fallow-duplicates-recorded-hits.json --health-baseline fallow-health-recorded-hits.json",
@@ -25,6 +25,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.7",
+    "@changesets/cli": "3.0.3",
+    "@changesets/read": "1.0.1",
     "@eslint/js": "10.0.1",
     "@types/bun": "1.4.4",
     "@typescript/native": "npm:typescript@7.1.0-beta",

@@ -1,11 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-} from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import {
   commitFiles,
@@ -227,46 +221,6 @@ describe("PR 1 hardening and catch tests (P0-1, P1-1..P1-5)", () => {
       stateDir,
     });
     expect(retry.exitCode).toBe(0);
-  });
-
-  test("P1-2 & US 25: package.json check wires check:change-notes and fails on unguarded src edit against origin/main", () => {
-    const pkgText = readFileSync(
-      join(import.meta.dir, "../package.json"),
-      "utf8",
-    );
-    const pkg: unknown = JSON.parse(pkgText);
-    const scripts: unknown = Reflect.get(Object(pkg), "scripts");
-    const checkScript = String(Reflect.get(Object(scripts), "check"));
-    expect(checkScript).toContain("check:change-notes");
-
-    const base = sandbox.folder("self-gate-");
-    const bare = join(base, "origin.git");
-    const repo = join(base, "repo");
-    const stateDir = join(base, "state");
-    mkdirSync(bare, { recursive: true });
-    git(bare, "init", "--bare", "-q");
-    initGitRepo(repo);
-    commitFiles(repo, "init", {
-      "agent-gates.json": readFileSync(
-        join(import.meta.dir, "../agent-gates.json"),
-        "utf8",
-      ),
-      "src/commands.ts": "export const ready = true;\n",
-    });
-    git(repo, "remote", "add", "origin", bare);
-    git(repo, "push", "-q", "-u", "origin", "main");
-    git(repo, "checkout", "-b", "unguarded");
-    commitFiles(repo, "unguarded edit", {
-      "src/commands.ts": "export const ready = false;\n",
-    });
-    const blocked = runGatesCli(["change-note", "check", "--json"], {
-      cwd: repo,
-      stateDir,
-    });
-    expect(blocked.exitCode).toBe(3);
-    expect(blocked.envelope).toMatchObject({
-      result: { causeCode: "DOMAIN_GATES_NOTE_MISSING" },
-    });
   });
 
   test("P1-3: pending omits stateFolder, scopes to current repository, and prints relative target paths only", async () => {

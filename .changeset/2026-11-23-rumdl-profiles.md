@@ -1,0 +1,5 @@
+---
+"agent-gates": minor
+---
+
+Published shared rumdl base profiles config/rumdl-docs.toml (standard flavor) and config/rumdl-notes.toml (obsidian flavor) with a fixed explicit enable rule list, cache disabled, respect-gitignore enabled, and front-matter-title disabled on MD001 and MD025.
