@@ -1,20 +1,5 @@
-import { command, contractFor } from "agent-cli-kernel";
-import type { ParsedPath } from "agent-cli-kernel";
-import { programsAddon } from "agent-cli-kernel/addons/programs";
-import { stateAddon } from "agent-cli-kernel/addons/state";
-import { changeNoteAddCommand } from "./change-note/add.ts";
-import { changeNoteCheckCommand } from "./change-note/check.ts";
-import { pendingCommand } from "./pending/pending.ts";
-import {
-  causes,
-  cli,
-  noInput,
-  nothingChanged,
-  unchangedSuccess,
-} from "./shared/causes.ts";
-import { defaultStateFolder } from "./shared/settings.ts";
-import { versionPrepareCommand } from "./version/prepare.ts";
-import { versionPreviewCommand } from "./version/preview.ts";
+import { command } from "agent-cli-kernel";
+import { noInput, nothingChanged, unchangedSuccess } from "./shared/causes.ts";
 
 const status = command({
   identity: "agent-gates.status",
@@ -34,36 +19,3 @@ const status = command({
 });
 
 export const commands = [status] as const;
-
-export function createAgentGates(
-  environment: Readonly<Record<string, string | undefined>>,
-) {
-  const stateFolder = defaultStateFolder(environment);
-  const state = stateAddon({
-    root: stateFolder,
-    report: "agent-gates.pending",
-  });
-  const parsePath = (value: string): ParsedPath =>
-    contract.boundary.path(value);
-  const contract = contractFor({
-    cli,
-    commands: [
-      status,
-      changeNoteAddCommand(state),
-      changeNoteCheckCommand(parsePath),
-      versionPreviewCommand(parsePath),
-      versionPrepareCommand(state, parsePath),
-      pendingCommand(state),
-    ],
-    causes,
-    state: state.descriptor,
-    installedAddons: ["state", "programs"],
-  });
-  return {
-    contract,
-    setup: {
-      addons: { programs: programsAddon() },
-      emergencyRecord: state.emergencyRecord,
-    },
-  };
-}
