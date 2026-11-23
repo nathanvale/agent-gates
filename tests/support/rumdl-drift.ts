@@ -130,6 +130,82 @@ export function parseEffectiveEnabledRules(
   );
 }
 
+const forbiddenGlobalSelectors: ReadonlySet<string> = new Set([
+  "disable",
+  "extend-enable",
+  "extend-disable",
+]);
+
+function selectionRepair(profileName: string): string {
+  return `from config/${profileName} and change global.enable instead; a rule taken out of global.enable needs a reason in config/rumdl-off-rules.json.`;
+}
+
+function collectDeclaredSelectorIssues(
+  profileName: string,
+  profileToml: unknown,
+): string[] {
+  if (!isPlainRecord(profileToml) || !isPlainRecord(profileToml["global"])) {
+    throw new Error(`config/${profileName} must contain a global section.`);
+  }
+  return Object.keys(profileToml["global"])
+    .filter((key) => forbiddenGlobalSelectors.has(key.replaceAll("_", "-")))
+    .map(
+      (key) =>
+        `${profileName}: global.${key} is declared, but global.enable is the only rule selector this profile may use. Remove global.${key} ${selectionRepair(profileName)}`,
+    );
+}
+
+function isEmptySelection(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.length === 0;
+  }
+  return isPlainRecord(value) && Object.keys(value).length === 0;
+}
+
+function collectResolvedSelectorIssues(
+  profileName: string,
+  effectiveConfig: unknown,
+): string[] {
+  if (
+    !isPlainRecord(effectiveConfig) ||
+    !isPlainRecord(effectiveConfig["global"])
+  ) {
+    throw new Error(
+      `rumdl config --output json for ${profileName} must contain a global section.`,
+    );
+  }
+  const resolved: readonly (readonly [string, unknown])[] = [
+    ["global.disable", effectiveConfig["global"]["disable"]],
+    ["global.extend-enable", effectiveConfig["global"]["extend-enable"]],
+    ["global.extend-disable", effectiveConfig["global"]["extend-disable"]],
+    ["per-file-ignores", effectiveConfig["per-file-ignores"]],
+  ];
+  const issues: string[] = [];
+  for (const [label, value] of resolved) {
+    if (value === undefined) {
+      issues.push(
+        `${profileName}: rumdl config --output json no longer reports ${label}, so nothing proves it is empty. Update collectResolvedSelectorIssues in tests/support/rumdl-drift.ts to read the place rumdl now reports it.`,
+      );
+    } else if (!isEmptySelection(value)) {
+      issues.push(
+        `${profileName}: rumdl resolves ${label} to ${JSON.stringify(value)}, so the pinned global.enable list is not what runs. Remove whatever sets it (a global list, "enabled" in a rule section, or a [per-file-ignores] table) ${selectionRepair(profileName)}`,
+      );
+    }
+  }
+  return issues;
+}
+
+export function findRumdlSelectionOverrides(
+  profileName: string,
+  tomlText: string,
+  configJsonStdout: string,
+): readonly string[] {
+  return [
+    ...collectDeclaredSelectorIssues(profileName, Bun.TOML.parse(tomlText)),
+    ...collectResolvedSelectorIssues(profileName, JSON.parse(configJsonStdout)),
+  ];
+}
+
 function collectDuplicateEnabledIssues(
   profileName: string,
   enabledRules: readonly string[],

@@ -1,8 +1,9 @@
 import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   findRumdlProfileDrift,
+  findRumdlSelectionOverrides,
   parseEffectiveEnabledRules,
   parseOffRuleCatalog,
   parseOfferedRumdlRules,
@@ -169,6 +170,15 @@ function runRumdl(cwd: string, args: readonly string[]) {
     stdout: run.stdout.toString(),
     stderr: run.stderr.toString(),
   };
+}
+
+function selectionOverrides(profilePath: string) {
+  const args = ["config", "--config", profilePath, "--output", "json"];
+  return findRumdlSelectionOverrides(
+    basename(profilePath),
+    readFileSync(profilePath, "utf8"),
+    runRumdl(repoRoot, args).stdout,
+  );
 }
 
 test("rumdl-notes.toml resolves the intended effective configuration when extended by a wiki", () => {
@@ -377,6 +387,36 @@ test("rumdl-docs.toml and rumdl-notes.toml pin their complete enabled rule lists
     expect(parseEffectiveEnabledRules(effective.stdout, profile.name)).toEqual([
       ...profile.expected,
     ]);
+    expect(selectionOverrides(profile.path)).toEqual([]);
+  }
+});
+
+test("a profile that switches a rule through anything but global.enable is refused with the cause and the repair", () => {
+  const docsToml = readFileSync(docsProfile, "utf8");
+  const inGlobal = (line: string) =>
+    docsToml.replace("[global]\n", `[global]\n${line}\n`);
+  const repair =
+    "from config/rumdl-docs.toml and change global.enable instead; a rule taken out of global.enable needs a reason in config/rumdl-off-rules.json.";
+  const declared = (key: string) =>
+    `rumdl-docs.toml: global.${key} is declared, but global.enable is the only rule selector this profile may use. Remove global.${key} ${repair}`;
+  const resolved = (label: string, value = '["MD092"]') =>
+    `rumdl-docs.toml: rumdl resolves ${label} to ${value}, so the pinned global.enable list is not what runs. Remove whatever sets it (a global list, "enabled" in a rule section, or a [per-file-ignores] table) ${repair}`;
+  const cases: readonly (readonly [string, readonly string[]])[] = [
+    [inGlobal('disable = ["MD092"]'), [declared("disable")]],
+    [
+      inGlobal('extend_disable = ["MD092"]'),
+      [declared("extend_disable"), resolved("global.extend-disable")],
+    ],
+    [`${docsToml}\n[MD092]\nenabled = false\n`, [resolved("global.disable")]],
+    [
+      `${docsToml}\n[per-file-ignores]\n"**/*.md" = ["MD092"]\n`,
+      [resolved("per-file-ignores", '{"**/*.md":["MD092"]}')],
+    ],
+  ];
+
+  for (const [planted, expected] of cases) {
+    const dir = fixture({ "rumdl-docs.toml": planted });
+    expect(selectionOverrides(join(dir, "rumdl-docs.toml"))).toEqual(expected);
   }
 });
 
