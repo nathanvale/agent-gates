@@ -1,8 +1,7 @@
-import { resolve } from "node:path";
 import { readChangesets } from "@changesets/read";
 
 const baseRef = "origin/main";
-const root = resolve(import.meta.dir, "..");
+const root = process.cwd();
 
 function git(...args: readonly string[]): string {
   const run = Bun.spawnSync(["git", ...args], {
@@ -38,7 +37,11 @@ function isGatedPath(path: string): boolean {
 
 const mergeBase = git("merge-base", baseRef, "HEAD").trim();
 const gatedPaths = [
-  ...new Set([...changedPaths(mergeBase, "HEAD"), ...changedPaths(mergeBase)]),
+  ...new Set([
+    ...changedPaths(mergeBase, "HEAD"),
+    ...changedPaths("--cached", mergeBase),
+    ...changedPaths(mergeBase),
+  ]),
 ].filter(isGatedPath);
 const [firstGatedPath] = gatedPaths;
 
