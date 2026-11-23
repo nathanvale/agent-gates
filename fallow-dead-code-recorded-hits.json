@@ -4,7 +4,7 @@
     "mode": "type-aware",
     "semantic_schema_version": 3,
     "capabilities": ["symbol-use", "type-coupling"],
-    "project_config_hash": "deferred:no-semantic-queries",
+    "project_config_hash": "sha256:3ac070103ab40d9265d77c6ba7c60164b3fb55943dee84ae1f1ebc7afe1f91e9",
     "backend_family": "typescript-go",
     "completeness": "complete",
     "node_modules": "present"
