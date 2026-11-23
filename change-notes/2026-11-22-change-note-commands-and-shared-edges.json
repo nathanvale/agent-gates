@@ -1,7 +1,0 @@
-{
-  "kind": "added",
-  "breaking": false,
-  "affects": ["change-note", "settings"],
-  "summary": "Added change-note add, change-note check, pending, agent-gates.json settings, shared git/file edges, and Fallow subject boundary enforcement.",
-  "action": null
-}

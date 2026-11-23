@@ -1,7 +1,0 @@
-{
-  "kind": "added",
-  "breaking": false,
-  "affects": ["versions"],
-  "summary": "Add version prepare and version preview commands with tag-based semantic versioning and end-to-end verification scenarios.",
-  "action": null
-}
