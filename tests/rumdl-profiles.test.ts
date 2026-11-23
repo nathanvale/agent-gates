@@ -1,12 +1,147 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import {
+  findRumdlProfileDrift,
+  parseEffectiveEnabledRules,
+  parseOffRuleCatalog,
+  parseOfferedRumdlRules,
+  parseProfileEnabledRules,
+} from "./support/rumdl-drift.ts";
 import { testFolder } from "./support/test-folder.ts";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const rumdlBin = join(repoRoot, "node_modules/.bin/rumdl");
 const docsProfile = join(repoRoot, "config/rumdl-docs.toml");
 const notesProfile = join(repoRoot, "config/rumdl-notes.toml");
+const offRulesFile = join(repoRoot, "config/rumdl-off-rules.json");
+
+const expectedDocsEnabledRules = [
+  "MD001",
+  "MD003",
+  "MD004",
+  "MD005",
+  "MD007",
+  "MD009",
+  "MD010",
+  "MD011",
+  "MD012",
+  "MD014",
+  "MD018",
+  "MD019",
+  "MD020",
+  "MD021",
+  "MD022",
+  "MD023",
+  "MD024",
+  "MD025",
+  "MD026",
+  "MD027",
+  "MD028",
+  "MD029",
+  "MD030",
+  "MD031",
+  "MD032",
+  "MD034",
+  "MD035",
+  "MD036",
+  "MD037",
+  "MD038",
+  "MD039",
+  "MD040",
+  "MD042",
+  "MD045",
+  "MD046",
+  "MD047",
+  "MD048",
+  "MD049",
+  "MD050",
+  "MD051",
+  "MD052",
+  "MD053",
+  "MD054",
+  "MD055",
+  "MD056",
+  "MD057",
+  "MD058",
+  "MD059",
+  "MD062",
+  "MD064",
+  "MD065",
+  "MD066",
+  "MD067",
+  "MD068",
+  "MD069",
+  "MD075",
+  "MD077",
+  "MD081",
+  "MD086",
+  "MD092",
+  "MD094",
+] as const;
+
+const expectedNotesEnabledRules = [
+  "MD001",
+  "MD003",
+  "MD004",
+  "MD005",
+  "MD007",
+  "MD009",
+  "MD010",
+  "MD011",
+  "MD012",
+  "MD014",
+  "MD018",
+  "MD019",
+  "MD020",
+  "MD021",
+  "MD022",
+  "MD023",
+  "MD024",
+  "MD025",
+  "MD026",
+  "MD027",
+  "MD028",
+  "MD029",
+  "MD030",
+  "MD031",
+  "MD032",
+  "MD034",
+  "MD035",
+  "MD036",
+  "MD037",
+  "MD038",
+  "MD039",
+  "MD040",
+  "MD042",
+  "MD045",
+  "MD046",
+  "MD047",
+  "MD048",
+  "MD049",
+  "MD050",
+  "MD052",
+  "MD053",
+  "MD054",
+  "MD055",
+  "MD056",
+  "MD057",
+  "MD058",
+  "MD059",
+  "MD062",
+  "MD064",
+  "MD065",
+  "MD066",
+  "MD067",
+  "MD068",
+  "MD069",
+  "MD075",
+  "MD077",
+  "MD081",
+  "MD086",
+  "MD092",
+  "MD094",
+] as const;
 
 const created: string[] = [];
 afterAll(() => {
@@ -207,4 +342,117 @@ See [missing](./missing.md).
   );
   expect(rules).toContain("MD004");
   expect(rules).toContain("MD057");
+});
+
+test("rumdl-docs.toml and rumdl-notes.toml pin their complete enabled rule lists", () => {
+  const cases = [
+    {
+      name: "rumdl-docs.toml",
+      path: docsProfile,
+      expected: expectedDocsEnabledRules,
+    },
+    {
+      name: "rumdl-notes.toml",
+      path: notesProfile,
+      expected: expectedNotesEnabledRules,
+    },
+  ] as const;
+
+  for (const profile of cases) {
+    const enabledFromToml = parseProfileEnabledRules(
+      readFileSync(profile.path, "utf8"),
+      profile.name,
+    );
+    expect(enabledFromToml).toEqual([...profile.expected]);
+
+    const effective = runRumdl(repoRoot, [
+      "config",
+      "--config",
+      profile.path,
+      "--output",
+      "json",
+    ]);
+    expect(effective.exitCode).toBe(0);
+    expect(effective.stderr).toBe("");
+    expect(parseEffectiveEnabledRules(effective.stdout, profile.name)).toEqual([
+      ...profile.expected,
+    ]);
+  }
+});
+
+test("every rule offered by rumdl is either enabled or listed as off with a reason in both profiles", () => {
+  const listed = runRumdl(repoRoot, [
+    "rule",
+    "--output-format",
+    "json",
+    "--no-config",
+  ]);
+  expect(listed.exitCode).toBe(0);
+  expect(listed.stderr).toBe("");
+  const offeredRules = parseOfferedRumdlRules(listed.stdout);
+  const catalog = parseOffRuleCatalog(readFileSync(offRulesFile, "utf8"));
+  expect(Object.keys(catalog.profiles).sort()).toEqual([
+    "rumdl-docs.toml",
+    "rumdl-notes.toml",
+  ]);
+
+  const issues = [
+    ...findRumdlProfileDrift(
+      "rumdl-docs.toml",
+      offeredRules,
+      parseProfileEnabledRules(
+        readFileSync(docsProfile, "utf8"),
+        "rumdl-docs.toml",
+      ),
+      catalog,
+    ),
+    ...findRumdlProfileDrift(
+      "rumdl-notes.toml",
+      offeredRules,
+      parseProfileEnabledRules(
+        readFileSync(notesProfile, "utf8"),
+        "rumdl-notes.toml",
+      ),
+      catalog,
+    ),
+  ];
+
+  expect(issues.join("\n")).toBe("");
+});
+
+test("drift audit names the rule and decision for unknown codes, new rules, overlap, and stale off entries", () => {
+  const offered = [
+    { code: "MD001", name: "heading-increment", summary: "Heading increment" },
+    { code: "MD013", name: "line-length", summary: "Line length" },
+    { code: "MD033", name: "no-inline-html", summary: "Inline HTML" },
+    { code: "MD998", name: "future-rule", summary: "Future rule from bump" },
+  ] as const;
+
+  const issues = findRumdlProfileDrift(
+    "rumdl-notes.toml",
+    offered,
+    ["MD001", "MD999"],
+    {
+      shared: {
+        MD001: "overlap",
+        MD013: "unwrapped prose",
+        MD033: "   ",
+        MD997: "removed upstream",
+      },
+      profiles: {
+        "rumdl-notes.toml": {
+          MD013: "duplicate",
+        },
+      },
+    },
+  );
+
+  expect(issues).toEqual([
+    'rumdl-notes.toml: off rule MD013 appears in both shared and profiles["rumdl-notes.toml"] — keep one owner in config/rumdl-off-rules.json.',
+    "rumdl-notes.toml: enabled rule MD999 is not offered by rumdl — remove or rename MD999 in config/rumdl-notes.toml.",
+    "rumdl-notes.toml: rule MD001 is both enabled in config/rumdl-notes.toml and listed as off in config/rumdl-off-rules.json — decide whether to keep MD001 enabled (remove from off list) or disable it (remove from global.enable).",
+    'rumdl-notes.toml: off rule MD033 has an empty reason — write a one-line reason or "not yet decided" in config/rumdl-off-rules.json.',
+    "rumdl-notes.toml: off rule MD997 is no longer offered by rumdl — remove MD997 from config/rumdl-off-rules.json.",
+    "rumdl-notes.toml: offered rule MD998 (future-rule: Future rule from bump) is neither enabled nor listed as off — enable MD998 in config/rumdl-notes.toml or add a one-line reason in config/rumdl-off-rules.json.",
+  ]);
 });
