@@ -9,21 +9,32 @@ export interface RumdlOffRuleCatalog {
   readonly profiles: Readonly<Record<string, Readonly<Record<string, string>>>>;
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function plainObjectMap(
+  value: unknown,
+): ReadonlyMap<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const map = new Map<string, unknown>();
+  for (const key of Object.keys(value)) {
+    const entry: unknown = Reflect.get(value, key);
+    map.set(key, entry);
+  }
+  return map;
 }
 
 function parseStringRecord(
   value: unknown,
   label: string,
 ): Readonly<Record<string, string>> {
-  if (!isPlainRecord(value)) {
+  const entries = plainObjectMap(value);
+  if (entries === undefined) {
     throw new Error(
       `${label} must be a JSON object mapping rule codes to reasons.`,
     );
   }
   const result: Record<string, string> = {};
-  for (const [key, entry] of Object.entries(value)) {
+  for (const [key, entry] of entries) {
     if (typeof entry !== "string") {
       throw new Error(`${label}.${key} must be a string reason.`);
     }
@@ -33,22 +44,22 @@ function parseStringRecord(
 }
 
 export function parseOffRuleCatalog(rawText: string): RumdlOffRuleCatalog {
-  const parsed: unknown = JSON.parse(rawText);
-  if (!isPlainRecord(parsed)) {
+  const parsed = plainObjectMap(JSON.parse(rawText));
+  if (parsed === undefined) {
     throw new Error("config/rumdl-off-rules.json must be a JSON object.");
   }
   const shared = parseStringRecord(
-    parsed["shared"],
+    parsed.get("shared"),
     "config/rumdl-off-rules.json#shared",
   );
-  const rawProfiles = parsed["profiles"];
-  if (!isPlainRecord(rawProfiles)) {
+  const rawProfiles = plainObjectMap(parsed.get("profiles"));
+  if (rawProfiles === undefined) {
     throw new Error(
       "config/rumdl-off-rules.json#profiles must be a JSON object keyed by profile filename.",
     );
   }
   const profiles: Record<string, Readonly<Record<string, string>>> = {};
-  for (const [profileName, entries] of Object.entries(rawProfiles)) {
+  for (const [profileName, entries] of rawProfiles) {
     profiles[profileName] = parseStringRecord(
       entries,
       `config/rumdl-off-rules.json#profiles.${profileName}`,
@@ -61,12 +72,13 @@ function parseOfferedRuleEntry(
   entry: unknown,
   index: number,
 ): OfferedRumdlRule {
-  if (!isPlainRecord(entry)) {
+  const fields = plainObjectMap(entry);
+  if (fields === undefined) {
     throw new Error(`rumdl rule JSON entry ${index} must be an object.`);
   }
-  const code = entry["code"];
-  const name = entry["name"];
-  const summary = entry["summary"];
+  const code = fields.get("code");
+  const name = fields.get("name");
+  const summary = fields.get("summary");
   if (
     typeof code !== "string" ||
     code.length === 0 ||
@@ -90,14 +102,36 @@ export function parseOfferedRumdlRules(
   return parsed.map((entry, index) => parseOfferedRuleEntry(entry, index));
 }
 
+export function parseRumdlCheckRules(stdout: string): readonly string[] {
+  const parsed: unknown = JSON.parse(stdout);
+  if (!Array.isArray(parsed)) {
+    throw new Error("rumdl check --output-format json must return an array.");
+  }
+  return parsed.map((entry, index) => {
+    const fields = plainObjectMap(entry);
+    if (fields === undefined) {
+      throw new Error(`rumdl check JSON entry ${index} must be an object.`);
+    }
+    const rule = fields.get("rule");
+    if (typeof rule !== "string" || rule.length === 0) {
+      throw new Error(
+        `rumdl check JSON entry ${index} must include a non-empty rule string.`,
+      );
+    }
+    return rule;
+  });
+}
+
 function extractGlobalEnable(
   parsed: unknown,
   sourceLabel: string,
 ): readonly string[] {
-  if (!isPlainRecord(parsed) || !isPlainRecord(parsed["global"])) {
+  const root = plainObjectMap(parsed);
+  const globalSection = root ? plainObjectMap(root.get("global")) : undefined;
+  if (globalSection === undefined) {
     throw new Error(`${sourceLabel} must contain a global section.`);
   }
-  const enable = parsed["global"]["enable"];
+  const enable = globalSection.get("enable");
   if (!Array.isArray(enable)) {
     throw new Error(`${sourceLabel} must define global.enable as an array.`);
   }
@@ -144,10 +178,12 @@ function collectDeclaredSelectorIssues(
   profileName: string,
   profileToml: unknown,
 ): string[] {
-  if (!isPlainRecord(profileToml) || !isPlainRecord(profileToml["global"])) {
+  const root = plainObjectMap(profileToml);
+  const globalSection = root ? plainObjectMap(root.get("global")) : undefined;
+  if (globalSection === undefined) {
     throw new Error(`config/${profileName} must contain a global section.`);
   }
-  return Object.keys(profileToml["global"])
+  return Array.from(globalSection.keys())
     .filter((key) => forbiddenGlobalSelectors.has(key.replaceAll("_", "-")))
     .map(
       (key) =>
@@ -159,26 +195,28 @@ function isEmptySelection(value: unknown): boolean {
   if (Array.isArray(value)) {
     return value.length === 0;
   }
-  return isPlainRecord(value) && Object.keys(value).length === 0;
+  const entries = plainObjectMap(value);
+  return entries !== undefined && entries.size === 0;
 }
 
 function collectResolvedSelectorIssues(
   profileName: string,
   effectiveConfig: unknown,
 ): string[] {
-  if (
-    !isPlainRecord(effectiveConfig) ||
-    !isPlainRecord(effectiveConfig["global"])
-  ) {
+  const config = plainObjectMap(effectiveConfig);
+  const globalSection = config
+    ? plainObjectMap(config.get("global"))
+    : undefined;
+  if (config === undefined || globalSection === undefined) {
     throw new Error(
       `rumdl config --output json for ${profileName} must contain a global section.`,
     );
   }
   const resolved: readonly (readonly [string, unknown])[] = [
-    ["global.disable", effectiveConfig["global"]["disable"]],
-    ["global.extend-enable", effectiveConfig["global"]["extend-enable"]],
-    ["global.extend-disable", effectiveConfig["global"]["extend-disable"]],
-    ["per-file-ignores", effectiveConfig["per-file-ignores"]],
+    ["global.disable", globalSection.get("disable")],
+    ["global.extend-enable", globalSection.get("extend-enable")],
+    ["global.extend-disable", globalSection.get("extend-disable")],
+    ["per-file-ignores", config.get("per-file-ignores")],
   ];
   const issues: string[] = [];
   for (const [label, value] of resolved) {
