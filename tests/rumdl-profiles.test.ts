@@ -8,6 +8,7 @@ import {
   parseOffRuleCatalog,
   parseOfferedRumdlRules,
   parseProfileEnabledRules,
+  parseRumdlCheckRules,
 } from "./support/rumdl-drift.ts";
 import { testFolder } from "./support/test-folder.ts";
 
@@ -294,9 +295,7 @@ See [missing](./nope.md).
     ".",
   ]);
   expect(broken.exitCode).toBe(1);
-  const rules = (JSON.parse(broken.stdout) as { rule: string }[]).map(
-    (entry) => entry.rule,
-  );
+  const rules = parseRumdlCheckRules(broken.stdout);
   expect(rules).toContain("MD001");
   expect(rules).toContain("MD004");
   expect(rules).toContain("MD057");
@@ -347,9 +346,7 @@ See [missing](./missing.md).
     ".",
   ]);
   expect(broken.exitCode).toBe(1);
-  const rules = (JSON.parse(broken.stdout) as { rule: string }[]).map(
-    (entry) => entry.rule,
-  );
+  const rules = parseRumdlCheckRules(broken.stdout);
   expect(rules).toContain("MD004");
   expect(rules).toContain("MD057");
 });
