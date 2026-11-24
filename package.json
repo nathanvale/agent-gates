@@ -11,6 +11,7 @@
   "scripts": {
     "start": "bun run src/cli.ts",
     "check:changesets": "bun run --bun changeset status --since origin/main && bun scripts/check-gated-paths.ts",
+    "check:recorded-health-sizes": "bun scripts/check-recorded-health-sizes.ts",
     "check": "bun run lint && bun run format:check && bun run typecheck && bun run test && bun run --silent quality:fallow",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
