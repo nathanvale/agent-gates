@@ -11,7 +11,7 @@ Keep domain implementation in separate files and preserve one public application
 Check command: bun run check
 Smoke: bun run start --help
 Source packet: https://linear.app/myagentdojo/issue/MAG-170/agent-gates-first-tool-change-notes-and-versions-as-kernel-commands
-Template source: 80a63a7b244d3fd87c5b63dea45cdda6d0f5de0c
+Template source: 60d14c29e6e88844fcbb9594998f16d484298e99
 
 ## Comments
 
