@@ -38,7 +38,9 @@ function plantedRoot(changesetPath: string, content: string): string {
   return root;
 }
 
-const major = '---\n"agent-gates": major\n---\n\n';
+const packageName = "agent-gates";
+const major = `---\n"${packageName}": major\n---\n\n`;
+const minor = `---\n"${packageName}": minor\n---\n\n`;
 
 test.each([
   ["a major with no Action line", ".changeset/x.md", `${major}Removed x.\n`],
@@ -69,10 +71,7 @@ test.each([
     "a major with an Action line after its summary",
     `${major}Removed x.\n\nAction: use y.\n`,
   ],
-  [
-    "a minor with no Action line",
-    '---\n"agent-gates": minor\n---\n\nAdded x.\n',
-  ],
+  ["a minor with no Action line", `${minor}Added x.\n`],
   ["an empty changeset", "---\n---\n\n"],
 ])("admits %s", async (_case, content) => {
   const root = plantedRoot(".changeset/x.md", content);
