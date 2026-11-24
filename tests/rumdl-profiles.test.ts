@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
@@ -10,10 +10,14 @@ import {
   parseProfileEnabledRules,
   parseRumdlCheckRules,
 } from "./support/rumdl-drift.ts";
+import {
+  rumdlWarmupTimeoutMs,
+  runRumdl,
+  warmRumdl,
+} from "./support/rumdl-runner.ts";
 import { testFolder } from "./support/test-folder.ts";
 
 const repoRoot = resolve(import.meta.dir, "..");
-const rumdlBin = join(repoRoot, "node_modules/.bin/rumdl");
 const docsProfile = join(repoRoot, "config/rumdl-docs.toml");
 const notesProfile = join(repoRoot, "config/rumdl-notes.toml");
 const offRulesFile = join(repoRoot, "config/rumdl-off-rules.json");
@@ -146,6 +150,9 @@ const expectedNotesEnabledRules = [
 ] as const;
 
 const created: string[] = [];
+beforeAll(() => {
+  warmRumdl();
+}, rumdlWarmupTimeoutMs);
 afterAll(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true });
 });
@@ -158,19 +165,6 @@ function fixture(files: Record<string, string>): string {
     writeFileSync(join(dir, rel), content);
   }
   return dir;
-}
-
-function runRumdl(cwd: string, args: readonly string[]) {
-  const run = Bun.spawnSync([rumdlBin, ...args], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  return {
-    exitCode: run.exitCode,
-    stdout: run.stdout.toString(),
-    stderr: run.stderr.toString(),
-  };
 }
 
 function selectionOverrides(profilePath: string) {
