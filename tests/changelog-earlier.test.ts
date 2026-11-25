@@ -7,69 +7,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import {
+  invokeChangelogCli,
+  invokeChangelogCliJson,
+  samplePullRequests,
+} from "./support/changelog-earlier.ts";
 import { testFolder } from "./support/test-folder.ts";
 
 setDefaultTimeout(30_000);
-
-const cli = join(import.meta.dir, "../src/cli.ts");
-
-function invoke(...argv: string[]) {
-  const child = Bun.spawnSync([process.execPath, "run", cli, ...argv], {
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: 20_000,
-  });
-  return {
-    exitCode: child.exitCode,
-    stdout: child.stdout.toString(),
-    stderr: child.stderr.toString(),
-  };
-}
-
-function invokeJson(...argv: string[]) {
-  const ran = invoke(...argv, "--json");
-  const parsed: unknown = JSON.parse(ran.stdout);
-  return { exitCode: ran.exitCode, stderr: ran.stderr, envelope: parsed };
-}
-
-const samplePullRequests = [
-  {
-    number: 5,
-    title: "chore(release): adopt Changesets",
-    mergedAt: "2026-11-23T12:00:00Z",
-    url: "https://github.com/example/pkg/pull/5",
-  },
-  {
-    number: 6,
-    title: "feat: after adoption",
-    mergedAt: "2026-11-24T01:00:00Z",
-    url: "https://github.com/example/pkg/pull/6",
-  },
-  {
-    number: 3,
-    title: "fix: second at same timestamp",
-    mergedAt: "2026-11-22T15:00:00Z",
-    url: "https://github.com/example/pkg/pull/3",
-  },
-  {
-    number: 2,
-    title: "feat: first at same timestamp",
-    mergedAt: "2026-11-22T15:00:00Z",
-    url: "https://github.com/example/pkg/pull/2",
-  },
-  {
-    number: 1,
-    title: "Initial commit (keep verbatim: [a/b])",
-    mergedAt: "2026-11-21T09:00:00Z",
-    url: "https://github.com/example/pkg/pull/1",
-  },
-  {
-    number: 4,
-    title: "docs: right before adoption",
-    mergedAt: "2026-11-23T11:59:59Z",
-    url: "https://github.com/example/pkg/pull/4",
-  },
-];
 
 test("adds Earlier changes below existing version sections, keeping text above byte for byte, without writing files", () => {
   const dir = testFolder("changelog-earlier-");
@@ -89,7 +34,7 @@ test("adds Earlier changes below existing version sections, keeping text above b
     writeFileSync(prsPath, JSON.stringify(samplePullRequests));
     writeFileSync(changelogPath, existing);
 
-    const ran = invokeJson(
+    const ran = invokeChangelogCliJson(
       "changelog",
       "earlier",
       "--pull-requests",
@@ -98,7 +43,7 @@ test("adds Earlier changes below existing version sections, keeping text above b
       changelogPath,
       "--package",
       "my-pkg",
-      "--adopted-in",
+      "--changesets-from",
       "5",
     );
 
@@ -138,7 +83,7 @@ test("builds a new changelog from the package title when CHANGELOG.md is missing
     const missingChangelogPath = join(dir, "CHANGELOG.md");
     writeFileSync(prsPath, JSON.stringify(samplePullRequests));
 
-    const first = invokeJson(
+    const first = invokeChangelogCliJson(
       "changelog",
       "earlier",
       "--pull-requests",
@@ -147,7 +92,7 @@ test("builds a new changelog from the package title when CHANGELOG.md is missing
       missingChangelogPath,
       "--package",
       "my-pkg",
-      "--adopted-in",
+      "--changesets-from",
       "5",
     );
 
@@ -175,7 +120,7 @@ test("builds a new changelog from the package title when CHANGELOG.md is missing
     expect(existsSync(missingChangelogPath)).toBe(false);
 
     writeFileSync(missingChangelogPath, expectedChangelog);
-    const second = invokeJson(
+    const second = invokeChangelogCliJson(
       "changelog",
       "earlier",
       "--pull-requests",
@@ -184,7 +129,7 @@ test("builds a new changelog from the package title when CHANGELOG.md is missing
       missingChangelogPath,
       "--package",
       "my-pkg",
-      "--adopted-in",
+      "--changesets-from",
       "5",
     );
 
@@ -212,7 +157,7 @@ test("replaces an existing Earlier changes section while keeping text above it b
     writeFileSync(prsPath, JSON.stringify(samplePullRequests));
     writeFileSync(changelogPath, existing);
 
-    const ran = invokeJson(
+    const ran = invokeChangelogCliJson(
       "changelog",
       "earlier",
       "--pull-requests",
@@ -221,7 +166,7 @@ test("replaces an existing Earlier changes section while keeping text above it b
       changelogPath,
       "--package",
       "my-pkg",
-      "--adopted-in",
+      "--changesets-from",
       "5",
     );
 
@@ -256,7 +201,7 @@ test("refuses an unreadable pull request list with cause and repair", () => {
     const missingPrsPath = join(dir, "does-not-exist.json");
     const changelogPath = join(dir, "CHANGELOG.md");
 
-    const ran = invokeJson(
+    const ran = invokeChangelogCliJson(
       "changelog",
       "earlier",
       "--pull-requests",
@@ -265,7 +210,7 @@ test("refuses an unreadable pull request list with cause and repair", () => {
       changelogPath,
       "--package",
       "my-pkg",
-      "--adopted-in",
+      "--changesets-from",
       "5",
     );
 
@@ -282,7 +227,7 @@ test("refuses an unreadable pull request list with cause and repair", () => {
       },
     });
 
-    const plain = invoke(
+    const plain = invokeChangelogCli(
       "changelog",
       "earlier",
       "--pull-requests",
@@ -291,7 +236,7 @@ test("refuses an unreadable pull request list with cause and repair", () => {
       changelogPath,
       "--package",
       "my-pkg",
-      "--adopted-in",
+      "--changesets-from",
       "5",
     );
     expect(plain.exitCode).toBe(3);
@@ -317,7 +262,7 @@ test("refuses a malformed pull request list with cause and repair", () => {
     );
 
     for (const prsPath of [badJsonPath, badShapePath]) {
-      const ran = invokeJson(
+      const ran = invokeChangelogCliJson(
         "changelog",
         "earlier",
         "--pull-requests",
@@ -326,7 +271,7 @@ test("refuses a malformed pull request list with cause and repair", () => {
         changelogPath,
         "--package",
         "my-pkg",
-        "--adopted-in",
+        "--changesets-from",
         "1",
       );
 
@@ -355,7 +300,7 @@ test("refuses when the adopting pull request number is not in the list", () => {
     const changelogPath = join(dir, "CHANGELOG.md");
     writeFileSync(prsPath, JSON.stringify(samplePullRequests));
 
-    const ran = invokeJson(
+    const ran = invokeChangelogCliJson(
       "changelog",
       "earlier",
       "--pull-requests",
@@ -364,7 +309,7 @@ test("refuses when the adopting pull request number is not in the list", () => {
       changelogPath,
       "--package",
       "my-pkg",
-      "--adopted-in",
+      "--changesets-from",
       "999",
     );
 
@@ -377,7 +322,7 @@ test("refuses when the adopting pull request number is not in the list", () => {
         outcome: "refused",
         data: null,
         repairAction:
-          "Pass --adopted-in with a pull request number that appears in the merged pull request list.",
+          "Pass --changesets-from with a pull request number that appears in the merged pull request list.",
       },
     });
   } finally {
@@ -392,7 +337,7 @@ test("refuses when no pull requests were merged before the adopting pull request
     const changelogPath = join(dir, "CHANGELOG.md");
     writeFileSync(prsPath, JSON.stringify(samplePullRequests));
 
-    const ran = invokeJson(
+    const ran = invokeChangelogCliJson(
       "changelog",
       "earlier",
       "--pull-requests",
@@ -401,7 +346,7 @@ test("refuses when no pull requests were merged before the adopting pull request
       changelogPath,
       "--package",
       "my-pkg",
-      "--adopted-in",
+      "--changesets-from",
       "1",
     );
 
@@ -414,7 +359,7 @@ test("refuses when no pull requests were merged before the adopting pull request
         outcome: "refused",
         data: null,
         repairAction:
-          "Skip the Earlier changes backfill when Changesets was adopted in the earliest pull request, or pass a later --adopted-in number.",
+          "Skip the Earlier changes backfill when Changesets was adopted in the earliest pull request, or pass a later --changesets-from number.",
       },
     });
   } finally {
@@ -430,7 +375,7 @@ test("refuses when the changelog path exists but cannot be read as a file", () =
     writeFileSync(prsPath, JSON.stringify(samplePullRequests));
     mkdirSync(changelogDirPath);
 
-    const ran = invokeJson(
+    const ran = invokeChangelogCliJson(
       "changelog",
       "earlier",
       "--pull-requests",
@@ -439,7 +384,7 @@ test("refuses when the changelog path exists but cannot be read as a file", () =
       changelogDirPath,
       "--package",
       "my-pkg",
-      "--adopted-in",
+      "--changesets-from",
       "5",
     );
 

@@ -92,7 +92,7 @@ export const changelogEarlier = command({
         },
       },
       {
-        name: "--adopted-in",
+        name: "--changesets-from",
         aliases: [],
         summary: "Number of the pull request that adopted Changesets.",
         required: true,
@@ -137,7 +137,7 @@ export const changelogEarlier = command({
       trigger:
         "The adopting pull request number is not in the merged pull request list.",
       repairAction:
-        "Pass --adopted-in with a pull request number that appears in the merged pull request list.",
+        "Pass --changesets-from with a pull request number that appears in the merged pull request list.",
       guidance: {
         next: {
           kind: "instruction",
@@ -153,7 +153,7 @@ export const changelogEarlier = command({
       causeCode: "DOMAIN_CHANGELOG_NO_EARLIER_PRS",
       trigger: "No pull requests were merged before the adopting pull request.",
       repairAction:
-        "Skip the Earlier changes backfill when Changesets was adopted in the earliest pull request, or pass a later --adopted-in number.",
+        "Skip the Earlier changes backfill when Changesets was adopted in the earliest pull request, or pass a later --changesets-from number.",
       guidance: {
         next: {
           kind: "instruction",
@@ -212,7 +212,7 @@ export const changelogEarlier = command({
 
     const selected = selectEarlierPullRequests(
       parsed.pullRequests,
-      input["--adopted-in"],
+      input["--changesets-from"],
     );
     if (!selected.ok) {
       if (selected.code === "adopting-missing") {
@@ -222,7 +222,7 @@ export const changelogEarlier = command({
             causeCode: "DOMAIN_CHANGELOG_ADOPTING_PR_MISSING",
           },
           {
-            message: `Pull request #${String(input["--adopted-in"])} is not in the merged pull request list.`,
+            message: `Pull request #${String(input["--changesets-from"])} is not in the merged pull request list.`,
             data: null,
             effects: nothingChanged,
           },
@@ -234,7 +234,7 @@ export const changelogEarlier = command({
           causeCode: "DOMAIN_CHANGELOG_NO_EARLIER_PRS",
         },
         {
-          message: `No pull requests were merged before pull request #${String(input["--adopted-in"])}.`,
+          message: `No pull requests were merged before pull request #${String(input["--changesets-from"])}.`,
           data: null,
           effects: nothingChanged,
         },
