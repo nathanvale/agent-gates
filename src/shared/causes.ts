@@ -16,7 +16,11 @@ export const causes = {
   DOMAIN_CHANGELOG_ADOPTING_PR_MISSING: domainRefusal,
   DOMAIN_CHANGELOG_NO_EARLIER_PRS: domainRefusal,
   DOMAIN_CHANGELOG_UNREADABLE: domainRefusal,
+  DOMAIN_CHANGELOG_POSTCHECK_FAILED: domainRefusal,
 } as const satisfies CauseTable;
+
+export const changelogPostcheckFailed =
+  "DOMAIN_CHANGELOG_POSTCHECK_FAILED" satisfies keyof typeof causes;
 
 export const unchangedSuccess =
   "SUCCESS_UNCHANGED" satisfies keyof typeof commonCauses;

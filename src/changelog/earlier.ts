@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { command, station } from "agent-cli-kernel";
 import {
   causes,
+  changelogPostcheckFailed,
   noInput,
   nothingChanged,
   stationWords,
@@ -178,6 +179,22 @@ export const changelogEarlier = command({
       independentObservable:
         "agent-gates.changelog-earlier:changelog-unreadable",
     }),
+    station(causes, {
+      ...stationWords,
+      commandIdentity,
+      causeCode: changelogPostcheckFailed,
+      trigger:
+        "The built changelog failed the post-check for a single final Earlier changes heading, preserved headings and prefix, and idempotent re-runs.",
+      repairAction:
+        "Repair unclosed Markdown fences, comments, or HTML blocks, normalize CR-only line endings, and remove heading marker collisions in CHANGELOG.md, then run changelog earlier again.",
+      guidance: {
+        next: {
+          kind: "instruction",
+          text: "Inspect CHANGELOG.md for unclosed blocks, CR-only line endings, or heading marker collisions, fix the Markdown structure, and run changelog earlier again.",
+        },
+      },
+      independentObservable: "agent-gates.changelog-earlier:postcheck-failed",
+    }),
   ],
   run: async (input, context) => {
     const rawPullRequests = await readTextFile(input["--pull-requests"]);
@@ -259,17 +276,30 @@ export const changelogEarlier = command({
       );
     }
 
-    const changelog = spliceEarlierChanges(
+    const spliced = spliceEarlierChanges(
       existingChangelog,
       input["--package"],
       selected.earlier,
     );
+    if (!spliced.ok) {
+      return context.result(
+        {
+          commandIdentity,
+          causeCode: changelogPostcheckFailed,
+        },
+        {
+          message: spliced.reason,
+          data: null,
+          effects: nothingChanged,
+        },
+      );
+    }
 
     return context.result(
       { commandIdentity, causeCode: unchangedSuccess },
       {
         message: `Built Earlier changes section with ${String(selected.earlier.length)} pull requests.`,
-        data: { changelog },
+        data: { changelog: spliced.changelog },
         effects: nothingChanged,
       },
     );

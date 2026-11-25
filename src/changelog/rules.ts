@@ -14,7 +14,33 @@ export type SelectEarlierResult =
   | { readonly ok: true; readonly earlier: readonly MergedPullRequest[] }
   | { readonly ok: false; readonly code: "adopting-missing" | "no-earlier" };
 
-const earlierHeading = "## Earlier changes";
+export type SpliceEarlierResult =
+  | { readonly ok: true; readonly changelog: string }
+  | { readonly ok: false; readonly reason: string };
+
+type TopLevelHeading = {
+  readonly level: number;
+  readonly html: string;
+};
+
+type HtmlScanState = {
+  readonly headings: TopLevelHeading[];
+  depth: number;
+};
+
+const earlierHeadingText = "Earlier changes";
+const earlierHeading = `## ${earlierHeadingText}`;
+const rawHtmlTags = new Set(["pre", "script", "style", "textarea"]);
+const containerHtmlTags = new Set(["blockquote", "ul", "ol", "li"]);
+const headingTagLevels = new Map<string, number>([
+  ["h1", 1],
+  ["h2", 2],
+  ["h3", 3],
+  ["h4", 4],
+  ["h5", 5],
+  ["h6", 6],
+]);
+const htmlTagPattern = /^<(\/?)([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>])[^>]*>/;
 
 function buildUniqueHeadingMarker(
   changelog: string,
@@ -184,18 +210,169 @@ function separatorBeforeSection(existingChangelog: string): string {
   return "\n\n";
 }
 
+function computeEarlierChangelog(
+  existingChangelog: string | null,
+  packageName: string,
+  earlier: readonly MergedPullRequest[],
+): { readonly prefix: string; readonly changelog: string } {
+  const section = renderEarlierSection(earlier);
+  if (existingChangelog === null || existingChangelog.length === 0) {
+    return { prefix: "", changelog: `# ${packageName}\n\n${section}` };
+  }
+  const headingIndex = findEarlierHeadingIndex(existingChangelog);
+  if (headingIndex !== -1) {
+    const prefix = existingChangelog.slice(0, headingIndex);
+    return { prefix, changelog: `${prefix}${section}` };
+  }
+  return {
+    prefix: existingChangelog,
+    changelog: `${existingChangelog}${separatorBeforeSection(existingChangelog)}${section}`,
+  };
+}
+
+function findRawTagEnd(lowerHtml: string, tag: string, from: number): number {
+  const closeIndex = lowerHtml.indexOf(`</${tag}>`, from);
+  return closeIndex === -1 ? lowerHtml.length : closeIndex + tag.length + 3;
+}
+
+function stepHtmlTag(
+  html: string,
+  lowerHtml: string,
+  tagStart: number,
+  state: HtmlScanState,
+): number {
+  if (html.startsWith("<!--", tagStart)) {
+    const closeIndex = html.indexOf("-->", tagStart + 4);
+    return closeIndex === -1 ? html.length : closeIndex + 3;
+  }
+  const match = htmlTagPattern.exec(html.slice(tagStart));
+  if (match === null) {
+    return tagStart + 1;
+  }
+  const isClosing = match[1] === "/";
+  const tag = (match[2] ?? "").toLowerCase();
+  const tagEnd = tagStart + match[0].length;
+  if (!isClosing && rawHtmlTags.has(tag)) {
+    return findRawTagEnd(lowerHtml, tag, tagEnd);
+  }
+  if (containerHtmlTags.has(tag)) {
+    if (isClosing) {
+      state.depth = Math.max(0, state.depth - 1);
+    } else if (!match[0].endsWith("/>")) {
+      state.depth += 1;
+    }
+    return tagEnd;
+  }
+  const level = headingTagLevels.get(tag);
+  if (!isClosing && state.depth === 0 && level !== undefined) {
+    const closeIndex = lowerHtml.indexOf(`</${tag}>`, tagEnd);
+    if (closeIndex !== -1) {
+      state.headings.push({ level, html: html.slice(tagEnd, closeIndex) });
+      return closeIndex + tag.length + 3;
+    }
+  }
+  return tagEnd;
+}
+
+function extractTopLevelHeadings(html: string): readonly TopLevelHeading[] {
+  const lowerHtml = html.toLowerCase();
+  const state: HtmlScanState = { headings: [], depth: 0 };
+  let cursor = 0;
+  while (cursor < html.length) {
+    const tagStart = html.indexOf("<", cursor);
+    if (tagStart === -1) {
+      break;
+    }
+    cursor = stepHtmlTag(html, lowerHtml, tagStart, state);
+  }
+  return state.headings;
+}
+
+function isEarlierHeading(heading: TopLevelHeading): boolean {
+  return heading.level === 2 && heading.html === earlierHeadingText;
+}
+
+function hasSingleFinalEarlierHeading(
+  headings: readonly TopLevelHeading[],
+): boolean {
+  const h2Headings = headings.filter((heading) => heading.level === 2);
+  const earlierCount = h2Headings.filter(isEarlierHeading).length;
+  const lastH2 = h2Headings.at(-1);
+  return earlierCount === 1 && lastH2 !== undefined && isEarlierHeading(lastH2);
+}
+
+function preservesNonEarlierHeadings(
+  inputHeadings: readonly TopLevelHeading[],
+  resultHeadings: readonly TopLevelHeading[],
+): boolean {
+  const expected = inputHeadings.filter(
+    (heading) => !isEarlierHeading(heading),
+  );
+  const actual = resultHeadings.filter((heading) => !isEarlierHeading(heading));
+  let searchFrom = 0;
+  for (const heading of expected) {
+    const foundIndex = actual.findIndex(
+      (candidate, index) =>
+        index >= searchFrom &&
+        candidate.level === heading.level &&
+        candidate.html === heading.html,
+    );
+    if (foundIndex === -1) {
+      return false;
+    }
+    searchFrom = foundIndex + 1;
+  }
+  return true;
+}
+
+function verifyEarlierChangelog(
+  existingChangelog: string | null,
+  packageName: string,
+  earlier: readonly MergedPullRequest[],
+  prefix: string,
+  candidate: string,
+): string | null {
+  if (!candidate.startsWith(prefix)) {
+    return "The built changelog does not start with the preserved prefix byte for byte.";
+  }
+  const resultHeadings = extractTopLevelHeadings(Bun.markdown.html(candidate));
+  if (!hasSingleFinalEarlierHeading(resultHeadings)) {
+    return "The built changelog does not end with a single top-level Earlier changes heading.";
+  }
+  if (existingChangelog !== null && existingChangelog.length > 0) {
+    const inputHeadings = extractTopLevelHeadings(
+      Bun.markdown.html(existingChangelog),
+    );
+    if (!preservesNonEarlierHeadings(inputHeadings, resultHeadings)) {
+      return "The built changelog dropped or reordered an existing top-level heading.";
+    }
+  }
+  const rerun = computeEarlierChangelog(candidate, packageName, earlier);
+  if (rerun.changelog !== candidate) {
+    return "Re-running changelog earlier on the built changelog did not return the same result.";
+  }
+  return null;
+}
+
 export function spliceEarlierChanges(
   existingChangelog: string | null,
   packageName: string,
   earlier: readonly MergedPullRequest[],
-): string {
-  const section = renderEarlierSection(earlier);
-  if (existingChangelog === null || existingChangelog.length === 0) {
-    return `# ${packageName}\n\n${section}`;
+): SpliceEarlierResult {
+  const computed = computeEarlierChangelog(
+    existingChangelog,
+    packageName,
+    earlier,
+  );
+  const failureReason = verifyEarlierChangelog(
+    existingChangelog,
+    packageName,
+    earlier,
+    computed.prefix,
+    computed.changelog,
+  );
+  if (failureReason !== null) {
+    return { ok: false, reason: failureReason };
   }
-  const headingIndex = findEarlierHeadingIndex(existingChangelog);
-  if (headingIndex !== -1) {
-    return `${existingChangelog.slice(0, headingIndex)}${section}`;
-  }
-  return `${existingChangelog}${separatorBeforeSection(existingChangelog)}${section}`;
+  return { ok: true, changelog: computed.changelog };
 }
