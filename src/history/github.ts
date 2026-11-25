@@ -124,6 +124,7 @@ async function runGhApi(
   gh: ParsedPath,
   args: readonly string[],
   label: string,
+  prNumber: number,
 ): Promise<
   | { readonly ok: true; readonly stdout: string }
   | { readonly ok: false; readonly reason: string }
@@ -142,13 +143,9 @@ async function runGhApi(
     };
   }
   if (result.exitCode !== 0) {
-    const detail =
-      result.stderr.trim() ||
-      result.stdout.trim() ||
-      `exit code ${String(result.exitCode)}`;
     return {
       ok: false,
-      reason: `GitHub CLI failed while reading ${label}: ${detail}`,
+      reason: `GitHub CLI failed while reading ${label} (exit code ${String(result.exitCode)}). Run \`gh pr view ${String(prNumber)}\` to see the detail.`,
     };
   }
   return { ok: true, stdout: result.stdout };
@@ -169,6 +166,7 @@ export async function fetchPullRequestText(
     gh,
     [`repos/${slug}/pulls/${String(prNumber)}`],
     prLabel,
+    prNumber,
   );
   if (!prResponse.ok) {
     return prResponse;
@@ -207,6 +205,7 @@ export async function fetchPullRequestText(
       gh,
       ["--paginate", "--slurp", collection.endpoint],
       collection.label,
+      prNumber,
     );
     if (!response.ok) {
       return response;

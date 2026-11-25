@@ -72,10 +72,9 @@ export async function verifyGitRepository(
     smallOutputLimitBytes,
   );
   if (result.exitCode !== 0) {
-    const detail = result.stderr.trim() || result.stdout.trim();
     return {
       ok: false,
-      reason: `Current folder is not a git repository: ${detail}`,
+      reason: `Current folder is not a git repository (git rev-parse exited with code ${String(result.exitCode)}). Run \`git rev-parse --git-dir\` to see the detail.`,
     };
   }
   return { ok: true };
@@ -95,19 +94,24 @@ export async function resolveRangeCommits(
       readonly reason: string;
     }
 > {
-  for (const rev of [base, head]) {
+  const rangeEnds: readonly { readonly label: string; readonly rev: string }[] =
+    [
+      { label: "base", rev: base },
+      { label: "head", rev: head },
+    ];
+  for (const end of rangeEnds) {
     const verified = await runGit(
       programs,
       git,
       cwd,
-      ["rev-parse", "--verify", `${rev}^{commit}`],
+      ["rev-parse", "--verify", `${end.rev}^{commit}`],
       smallOutputLimitBytes,
     );
     if (verified.exitCode !== 0) {
       return {
         ok: false,
         kind: "range-missing",
-        reason: `Cannot resolve commit ${rev} in range ${base}..${head}. The working tree is never scanned.`,
+        reason: `Cannot resolve the ${end.label} commit in --range (git rev-parse exited with code ${String(verified.exitCode)}). Run \`git rev-parse --verify <ref>^{commit}\` to see the detail. The working tree is never scanned.`,
       };
     }
   }
@@ -134,11 +138,10 @@ export async function resolveRangeCommits(
     };
   }
   if (logResult.exitCode !== 0) {
-    const detail = logResult.stderr.trim() || logResult.stdout.trim();
     return {
       ok: false,
       kind: "precondition",
-      reason: `git log failed for range ${base}..${head}: ${detail}`,
+      reason: `git log failed while reading commit messages (exit code ${String(logResult.exitCode)}). Run \`git log --oneline <base>..<head>\` to see the detail.`,
     };
   }
 
@@ -147,7 +150,8 @@ export async function resolveRangeCommits(
     return {
       ok: false,
       kind: "range-missing",
-      reason: `Range ${base}..${head} holds no commits. The working tree is never scanned.`,
+      reason:
+        "The --range selects no commits. The working tree is never scanned.",
     };
   }
 
@@ -175,6 +179,7 @@ export async function readRangeAddedPaths(
       "--name-status",
       "-z",
       "-M",
+      "-C",
       "--no-color",
       "--no-ext-diff",
       "--no-textconv",
@@ -190,13 +195,12 @@ export async function readRangeAddedPaths(
     };
   }
   if (result.exitCode !== 0) {
-    const detail = result.stderr.trim() || result.stdout.trim();
     return {
       ok: false,
-      reason: `git log name-status failed for range ${base}..${head}: ${detail}`,
+      reason: `git log --name-status failed while reading commit paths (exit code ${String(result.exitCode)}). Run \`git log --name-status <base>..<head>\` to see the detail.`,
     };
   }
-  return { ok: true, paths: parseAddedPaths(result.stdout) };
+  return parseAddedPaths(result.stdout);
 }
 
 export async function readRangeDiff(
@@ -238,10 +242,9 @@ export async function readRangeDiff(
     };
   }
   if (result.exitCode !== 0) {
-    const detail = result.stderr.trim() || result.stdout.trim();
     return {
       ok: false,
-      reason: `git log diff failed for range ${base}..${head}: ${detail}`,
+      reason: `git log diff failed while reading commit patches (exit code ${String(result.exitCode)}). Run \`git log -p <base>..<head>\` to see the detail.`,
     };
   }
   return { ok: true, diff: result.stdout };
@@ -263,17 +266,17 @@ export async function readOriginSlug(
     smallOutputLimitBytes,
   );
   if (result.exitCode !== 0) {
-    const detail = result.stderr.trim() || result.stdout.trim();
     return {
       ok: false,
-      reason: `Cannot read origin remote for pull request scan: ${detail}`,
+      reason: `Cannot read origin remote for pull request scan (git remote get-url exited with code ${String(result.exitCode)}). Run \`git remote get-url origin\` to see the detail.`,
     };
   }
   const slug = parseOriginSlug(result.stdout);
   if (slug === null) {
     return {
       ok: false,
-      reason: `Cannot parse owner/repo from origin remote URL: ${result.stdout.trim()}`,
+      reason:
+        "Cannot parse owner/repo from the origin remote URL. Run `git remote get-url origin` to inspect it.",
     };
   }
   return { ok: true, slug };

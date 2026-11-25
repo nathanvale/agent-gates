@@ -211,7 +211,9 @@ esac`,
           outcome: "refused",
         },
       });
-      expect(failRun.stdout).toContain("not logged in");
+      expect(failRun.stdout).toContain("gh pr view 7");
+      expect(failRun.stdout).toContain("exit code 1");
+      assertNoEcho(failRun, ["not logged in"]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

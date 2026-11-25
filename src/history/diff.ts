@@ -1,9 +1,9 @@
-import {
-  commitMarkerPrefix,
-  matchingPatternLines,
-  redactText,
+import { commitMarkerPrefix, findPatternMatches, redactPath } from "./rules.ts";
+import type {
+  CompiledPattern,
+  HistoryFinding,
+  ScanFindingsResult,
 } from "./rules.ts";
-import type { CompiledPattern, HistoryFinding } from "./rules.ts";
 
 type DiffState = {
   commit: string | null;
@@ -147,12 +147,19 @@ function recordLineFindings(
   content: string,
   patterns: readonly CompiledPattern[],
   findings: HistoryFinding[],
+  matchedSubstrings: string[],
 ): void {
-  for (const patternLine of matchingPatternLines(content, patterns)) {
+  const matches = findPatternMatches(content, patterns);
+  if (matches.patternLines.length === 0) {
+    return;
+  }
+  matchedSubstrings.push(...matches.matchedSubstrings);
+  const safePath = redactPath(filePath, patterns);
+  for (const patternLine of matches.patternLines) {
     findings.push({
       kind: "commit-line",
       commit,
-      path: redactText(filePath, patterns),
+      path: safePath,
       line: lineNumber,
       patternLine,
     });
@@ -196,6 +203,7 @@ function processHunkLine(
   state: DiffState,
   patterns: readonly CompiledPattern[],
   findings: HistoryFinding[],
+  matchedSubstrings: string[],
 ): void {
   if (
     line.startsWith("\\") ||
@@ -214,6 +222,7 @@ function processHunkLine(
         line.slice(1),
         patterns,
         findings,
+        matchedSubstrings,
       );
       state.newLine += 1;
     } else if (tag === " ") {
@@ -233,6 +242,7 @@ function processHunkLine(
       line.slice(state.parentCount),
       patterns,
       findings,
+      matchedSubstrings,
     );
   }
   state.newLine += 1;
@@ -303,8 +313,9 @@ function handleFileMetaLine(line: string, state: DiffState): boolean {
 export function scanDiffOutput(
   diffOutput: string,
   patterns: readonly CompiledPattern[],
-): readonly HistoryFinding[] {
+): ScanFindingsResult {
   const findings: HistoryFinding[] = [];
+  const matchedSubstrings: string[] = [];
   const state: DiffState = {
     commit: null,
     filePath: null,
@@ -330,9 +341,9 @@ export function scanDiffOutput(
       continue;
     }
     if (state.inHunk) {
-      processHunkLine(line, state, patterns, findings);
+      processHunkLine(line, state, patterns, findings, matchedSubstrings);
     }
   }
 
-  return findings;
+  return { findings, matchedSubstrings };
 }

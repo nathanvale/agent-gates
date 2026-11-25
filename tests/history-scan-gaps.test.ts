@@ -214,7 +214,7 @@ describe("history scan refusal message redaction", () => {
           outcome: "refused",
         },
       });
-      expect(jsonRun.stdout).toContain("[redacted]");
+      expect(jsonRun.stdout).toContain("gh pr view 9");
       assertNoEcho(jsonRun, [secret, patternText, "other-alt"]);
 
       const plainRun = invokeHistoryScan(
@@ -228,7 +228,7 @@ describe("history scan refusal message redaction", () => {
       );
       expect(plainRun.exitCode).toBe(3);
       expect(plainRun.stdout).toBe("");
-      expect(plainRun.stderr).toContain("[redacted]");
+      expect(plainRun.stderr).toContain("gh pr view 9");
       assertNoEcho(plainRun, [secret, patternText, "other-alt"]);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -280,7 +280,7 @@ describe("history scan refusal message redaction", () => {
           outcome: "refused",
         },
       });
-      expect(jsonRun.stdout).toContain("[redacted]");
+      expect(jsonRun.stdout).toContain("gh pr view 9");
       assertNoEcho(jsonRun, [secret, patternText, "other-alt"]);
 
       const plainRun = invokeHistoryScan(
@@ -294,7 +294,7 @@ describe("history scan refusal message redaction", () => {
       );
       expect(plainRun.exitCode).toBe(3);
       expect(plainRun.stdout).toBe("");
-      expect(plainRun.stderr).toContain("[redacted]");
+      expect(plainRun.stderr).toContain("gh pr view 9");
       assertNoEcho(plainRun, [secret, patternText, "other-alt"]);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -338,7 +338,7 @@ describe("history scan refusal message redaction", () => {
           outcome: "refused",
         },
       });
-      expect(jsonRun.stdout).toContain("[redacted]");
+      expect(jsonRun.stdout).toContain("git remote get-url origin");
       assertNoEcho(jsonRun, [secret, patternText, "other-alt"]);
 
       const plainRun = invokeHistoryScan(
@@ -352,7 +352,7 @@ describe("history scan refusal message redaction", () => {
       );
       expect(plainRun.exitCode).toBe(3);
       expect(plainRun.stdout).toBe("");
-      expect(plainRun.stderr).toContain("[redacted]");
+      expect(plainRun.stderr).toContain("git remote get-url origin");
       assertNoEcho(plainRun, [secret, patternText, "other-alt"]);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -389,7 +389,7 @@ describe("history scan refusal message redaction", () => {
           outcome: "refused",
         },
       });
-      expect(jsonRun.stdout).toContain("[redacted]");
+      expect(jsonRun.stdout).toContain("git rev-parse");
       assertNoEcho(jsonRun, [secret, patternText, "other-alt"]);
 
       const plainRun = invokeHistoryScan(
@@ -401,7 +401,7 @@ describe("history scan refusal message redaction", () => {
       );
       expect(plainRun.exitCode).toBe(3);
       expect(plainRun.stdout).toBe("");
-      expect(plainRun.stderr).toContain("[redacted]");
+      expect(plainRun.stderr).toContain("git rev-parse");
       assertNoEcho(plainRun, [secret, patternText, "other-alt"]);
     } finally {
       rmSync(root, { recursive: true, force: true });

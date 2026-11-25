@@ -77,3 +77,33 @@ export function writeFakeGh(binDir: string, scriptBody: string): string {
   chmodSync(scriptPath, 0o755);
   return binDir;
 }
+
+export function assertRefusalBothModes(
+  options: CliRunOptions,
+  argv: readonly string[],
+  expectedCauseCode: string,
+  forbidden: readonly string[],
+): {
+  readonly jsonStdout: string;
+  readonly plainStderr: string;
+} {
+  const jsonRun = invokeHistoryScanJson(options, ...argv);
+  expect(jsonRun.exitCode).toBe(3);
+  expect(jsonRun.stderr).toBe("");
+  expect(jsonRun.envelope).toMatchObject({
+    result: {
+      commandIdentity: "agent-gates.history-scan",
+      causeCode: expectedCauseCode,
+      exitCode: 3,
+      outcome: "refused",
+    },
+  });
+  assertNoEcho(jsonRun, forbidden);
+
+  const plainRun = invokeHistoryScan(options, ...argv);
+  expect(plainRun.exitCode).toBe(3);
+  expect(plainRun.stdout).toBe("");
+  assertNoEcho(plainRun, forbidden);
+
+  return { jsonStdout: jsonRun.stdout, plainStderr: plainRun.stderr };
+}

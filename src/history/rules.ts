@@ -150,15 +150,85 @@ export function parseOriginSlug(remoteUrl: string): string | null {
   return null;
 }
 
+export type PatternMatchSet = {
+  readonly patternLines: readonly number[];
+  readonly matchedSubstrings: readonly string[];
+};
+
+export type ScanFindingsResult = {
+  readonly findings: readonly HistoryFinding[];
+  readonly matchedSubstrings: readonly string[];
+};
+
+export type ParsedAddedPathsResult =
+  | { readonly ok: true; readonly paths: readonly CommitAddedPath[] }
+  | { readonly ok: false; readonly reason: string };
+
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function redactText(
   text: string,
   patterns: readonly CompiledPattern[],
+  matchedSubstrings: readonly string[] = [],
 ): string {
   let redacted = text;
   for (const pattern of patterns) {
     redacted = redacted.replace(pattern.globalRegex, "[redacted]");
   }
+  const uniqueSubstrings = [...new Set(matchedSubstrings)]
+    .filter((entry) => entry !== "")
+    .sort((left, right) => right.length - left.length);
+  for (const matched of uniqueSubstrings) {
+    redacted = redacted.replace(
+      new RegExp(escapeRegExp(matched), "gi"),
+      "[redacted]",
+    );
+  }
   return redacted;
+}
+
+function replaceCrossSegmentMatches(
+  filePath: string,
+  patterns: readonly CompiledPattern[],
+): string {
+  let current = filePath;
+  for (const pattern of patterns) {
+    let spansSegment = false;
+    for (const match of current.matchAll(pattern.globalRegex)) {
+      if (match[0].includes("/")) {
+        spansSegment = true;
+        break;
+      }
+    }
+    if (spansSegment) {
+      current = current.replace(pattern.globalRegex, "[redacted]");
+    }
+  }
+  return current;
+}
+
+export function redactPath(
+  filePath: string,
+  patterns: readonly CompiledPattern[],
+): string {
+  const afterCrossSegment = replaceCrossSegmentMatches(filePath, patterns);
+  const redactedSegments = afterCrossSegment
+    .split("/")
+    .map((segment) =>
+      patterns.some((pattern) => pattern.regex.test(segment))
+        ? "[redacted]"
+        : segment,
+    )
+    .join("/");
+  let finalPath = redactedSegments;
+  for (const pattern of patterns) {
+    if (pattern.regex.test(finalPath)) {
+      finalPath = finalPath.replace(pattern.globalRegex, "[redacted]");
+    }
+  }
+  return finalPath;
 }
 
 function consumeNameStatusEntry(
@@ -167,24 +237,35 @@ function consumeNameStatusEntry(
   status: string,
   commit: string,
   entries: CommitAddedPath[],
-): number {
+):
+  | { readonly ok: true; readonly nextIndex: number }
+  | { readonly ok: false; readonly reason: string } {
   if (/^[RC]\d*$/.test(status)) {
     const destination = tokens[index + 2];
     if (destination !== undefined && destination !== "") {
       entries.push({ commit, path: destination });
     }
-    return index + 3;
+    return { ok: true, nextIndex: index + 3 };
   }
-  const filePath = tokens[index + 1];
-  if (/^A+$/.test(status) && filePath !== undefined && filePath !== "") {
-    entries.push({ commit, path: filePath });
+  if (/^[AMT]$/.test(status) || /^[ACRMT]{2,}$/.test(status)) {
+    const filePath = tokens[index + 1];
+    if (filePath !== undefined && filePath !== "") {
+      entries.push({ commit, path: filePath });
+    }
+    return { ok: true, nextIndex: index + 2 };
   }
-  return index + 2;
+  if (/^D+$/.test(status)) {
+    return { ok: true, nextIndex: index + 2 };
+  }
+  return {
+    ok: false,
+    reason: `Unrecognised git --name-status code "${status}" in commit ${commit}. Run \`git log --name-status <base>..<head>\` to inspect the history.`,
+  };
 }
 
-export function parseAddedPaths(nulOutput: string): readonly CommitAddedPath[] {
+export function parseAddedPaths(nulOutput: string): ParsedAddedPathsResult {
   if (nulOutput === "") {
-    return [];
+    return { ok: true, paths: [] };
   }
   const tokens = nulOutput.split("\0");
   const entries: CommitAddedPath[] = [];
@@ -202,17 +283,21 @@ export function parseAddedPaths(nulOutput: string): readonly CommitAddedPath[] {
     } else if (currentCommit === null) {
       index += 1;
     } else {
-      index = consumeNameStatusEntry(
+      const consumed = consumeNameStatusEntry(
         tokens,
         index,
         token,
         currentCommit,
         entries,
       );
+      if (!consumed.ok) {
+        return consumed;
+      }
+      index = consumed.nextIndex;
     }
   }
 
-  return entries;
+  return { ok: true, paths: entries };
 }
 
 export function parseCommitMessages(nulOutput: string): readonly CommitMeta[] {
@@ -232,26 +317,37 @@ export function parseCommitMessages(nulOutput: string): readonly CommitMeta[] {
   return commits;
 }
 
-export function matchingPatternLines(
+export function findPatternMatches(
   text: string,
   patterns: readonly CompiledPattern[],
-): readonly number[] {
-  const matched: number[] = [];
+): PatternMatchSet {
+  const patternLines: number[] = [];
+  const matchedSubstrings: string[] = [];
   for (const pattern of patterns) {
-    if (pattern.regex.test(text)) {
-      matched.push(pattern.lineNumber);
+    let matched = false;
+    for (const match of text.matchAll(pattern.globalRegex)) {
+      matched = true;
+      if (match[0] !== "") {
+        matchedSubstrings.push(match[0]);
+      }
+    }
+    if (matched) {
+      patternLines.push(pattern.lineNumber);
     }
   }
-  return matched;
+  return { patternLines, matchedSubstrings };
 }
 
 export function scanCommitMessages(
   commits: readonly CommitMeta[],
   patterns: readonly CompiledPattern[],
-): readonly HistoryFinding[] {
+): ScanFindingsResult {
   const findings: HistoryFinding[] = [];
+  const matchedSubstrings: string[] = [];
   for (const commit of commits) {
-    for (const patternLine of matchingPatternLines(commit.message, patterns)) {
+    const matches = findPatternMatches(commit.message, patterns);
+    matchedSubstrings.push(...matches.matchedSubstrings);
+    for (const patternLine of matches.patternLines) {
       findings.push({
         kind: "commit-message",
         commit: commit.shortHash,
@@ -259,35 +355,64 @@ export function scanCommitMessages(
       });
     }
   }
-  return findings;
+  return { findings, matchedSubstrings };
+}
+
+function matchPathAndSegments(
+  filePath: string,
+  patterns: readonly CompiledPattern[],
+): PatternMatchSet {
+  const lineNumbers = new Set<number>();
+  const matchedSubstrings: string[] = [];
+  for (const candidate of [filePath, ...filePath.split("/")]) {
+    if (candidate === "") {
+      continue;
+    }
+    const matches = findPatternMatches(candidate, patterns);
+    for (const line of matches.patternLines) {
+      lineNumbers.add(line);
+    }
+    matchedSubstrings.push(...matches.matchedSubstrings);
+  }
+  return {
+    patternLines: [...lineNumbers].sort((left, right) => left - right),
+    matchedSubstrings,
+  };
 }
 
 export function scanCommitPaths(
   entries: readonly CommitAddedPath[],
   patterns: readonly CompiledPattern[],
-): readonly HistoryFinding[] {
+): ScanFindingsResult {
   const findings: HistoryFinding[] = [];
+  const matchedSubstrings: string[] = [];
   for (const entry of entries) {
-    for (const patternLine of matchingPatternLines(entry.path, patterns)) {
+    const matches = matchPathAndSegments(entry.path, patterns);
+    matchedSubstrings.push(...matches.matchedSubstrings);
+    const safePath = redactPath(entry.path, patterns);
+    for (const patternLine of matches.patternLines) {
       findings.push({
         kind: "commit-path",
         commit: entry.commit,
-        path: redactText(entry.path, patterns),
+        path: safePath,
         patternLine,
       });
     }
   }
-  return findings;
+  return { findings, matchedSubstrings };
 }
 
 export function scanPullRequestParts(
   pullRequest: number,
   parts: readonly PullRequestTextPart[],
   patterns: readonly CompiledPattern[],
-): readonly HistoryFinding[] {
+): ScanFindingsResult {
   const findings: HistoryFinding[] = [];
+  const matchedSubstrings: string[] = [];
   for (const part of parts) {
-    for (const patternLine of matchingPatternLines(part.text, patterns)) {
+    const matches = findPatternMatches(part.text, patterns);
+    matchedSubstrings.push(...matches.matchedSubstrings);
+    for (const patternLine of matches.patternLines) {
       findings.push({
         kind: "pull-request",
         pullRequest,
@@ -297,7 +422,7 @@ export function scanPullRequestParts(
       });
     }
   }
-  return findings;
+  return { findings, matchedSubstrings };
 }
 
 function formatFinding(finding: HistoryFinding): string {

@@ -51,7 +51,8 @@ async function loadPatterns(
   } catch {
     return {
       ok: false,
-      reason: `Cannot read pattern file at ${patternFilePath}.`,
+      reason:
+        "Cannot read the file given to --pattern-file. Check the path and file permissions.",
     };
   }
   return parsePatternFile(content);
@@ -65,11 +66,15 @@ async function scanPullRequests(
   pullRequests: readonly number[],
   patterns: readonly CompiledPattern[],
 ): Promise<
-  | { readonly ok: true; readonly findings: readonly HistoryFinding[] }
+  | {
+      readonly ok: true;
+      readonly findings: readonly HistoryFinding[];
+      readonly matchedSubstrings: readonly string[];
+    }
   | { readonly ok: false; readonly reason: string }
 > {
   if (pullRequests.length === 0) {
-    return { ok: true, findings: [] };
+    return { ok: true, findings: [], matchedSubstrings: [] };
   }
   const ghResolved = resolveGhBinary(parsePath);
   if (!ghResolved.ok) {
@@ -80,6 +85,7 @@ async function scanPullRequests(
     return originResolved;
   }
   const findings: HistoryFinding[] = [];
+  const matchedSubstrings: string[] = [];
   for (const prNumber of pullRequests) {
     const fetched = await fetchPullRequestText(
       programs,
@@ -90,9 +96,11 @@ async function scanPullRequests(
     if (!fetched.ok) {
       return fetched;
     }
-    findings.push(...scanPullRequestParts(prNumber, fetched.parts, patterns));
+    const scanned = scanPullRequestParts(prNumber, fetched.parts, patterns);
+    findings.push(...scanned.findings);
+    matchedSubstrings.push(...scanned.matchedSubstrings);
   }
-  return { ok: true, findings };
+  return { ok: true, findings, matchedSubstrings };
 }
 
 type HistoryScanEvaluation =
@@ -101,6 +109,7 @@ type HistoryScanEvaluation =
       readonly commitsScanned: number;
       readonly pullRequestsScanned: number;
       readonly findings: readonly HistoryFinding[];
+      readonly matchedSubstrings: readonly string[];
       readonly patterns: readonly CompiledPattern[];
     }
   | {
@@ -215,10 +224,19 @@ async function evaluateHistoryScan(
     };
   }
 
+  const messageScan = scanCommitMessages(commitsResult.commits, patterns);
+  const pathScan = scanCommitPaths(addedPathsResult.paths, patterns);
+  const diffScan = scanDiffOutput(diffResult.diff, patterns);
+
   const findings: HistoryFinding[] = [
-    ...scanCommitMessages(commitsResult.commits, patterns),
-    ...scanCommitPaths(addedPathsResult.paths, patterns),
-    ...scanDiffOutput(diffResult.diff, patterns),
+    ...messageScan.findings,
+    ...pathScan.findings,
+    ...diffScan.findings,
+  ];
+  const matchedSubstrings: string[] = [
+    ...messageScan.matchedSubstrings,
+    ...pathScan.matchedSubstrings,
+    ...diffScan.matchedSubstrings,
   ];
 
   const prResult = await scanPullRequests(
@@ -238,12 +256,14 @@ async function evaluateHistoryScan(
     };
   }
   findings.push(...prResult.findings);
+  matchedSubstrings.push(...prResult.matchedSubstrings);
 
   return {
     ok: true,
     commitsScanned: commitsResult.commits.length,
     pullRequestsScanned: options.pullRequests.length,
     findings,
+    matchedSubstrings,
     patterns,
   };
 }
@@ -411,6 +431,7 @@ export function createHistoryScan(
             message: redactText(
               formatRefusalMessage(evaluated.findings),
               evaluated.patterns,
+              evaluated.matchedSubstrings,
             ),
             data: null,
             effects: nothingChanged,
