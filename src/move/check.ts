@@ -28,6 +28,13 @@ function describeFinding(finding: MoveFinding): string {
   }
 }
 
+function describeNotChecked(item: NotCheckedItem): string {
+  if (item.enableWith !== undefined) {
+    return `${item.check} via ${item.enableWith}`;
+  }
+  return `${item.check}: ${item.reason}`;
+}
+
 function formatRefusalMessage(
   findings: readonly MoveFinding[],
   notChecked: readonly NotCheckedItem[],
@@ -36,7 +43,7 @@ function formatRefusalMessage(
   const skipped =
     notChecked.length === 0
       ? ""
-      : ` [not checked: ${notChecked.map((item) => `${item.check} via ${item.enableWith}`).join(", ")}]`;
+      : ` [not checked: ${notChecked.map(describeNotChecked).join(", ")}]`;
   return `Move check found ${String(findings.length)} issue${findings.length === 1 ? "" : "s"}: ${details}${skipped}`;
 }
 
@@ -47,7 +54,7 @@ export function createMoveCheck(
     identity: commandIdentity,
     route: ["move", "check"],
     summary:
-      "Check that a move between repositories lost no files, links, or tests.",
+      "Check that a move between repositories lost no files, links, or tests. Test discovery runs the destination's test files.",
     input: {
       ...noInput,
       options: [

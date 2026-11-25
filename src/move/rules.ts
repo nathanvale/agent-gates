@@ -27,8 +27,16 @@ export type MoveFinding = {
 export type NotCheckedItem = {
   readonly check: string;
   readonly reason: string;
-  readonly enableWith: string;
+  readonly enableWith?: string;
 };
+
+export type ResolvedTestScript =
+  | { readonly kind: "bun-test"; readonly args: readonly string[] }
+  | {
+      readonly kind: "unsupported";
+      readonly script: string;
+      readonly reason: string;
+    };
 
 export type CommitRangeSpec = {
   readonly first: string;
@@ -167,37 +175,6 @@ export function compareTrees(
   return findings;
 }
 
-function stripMarkdownCode(markdown: string): string {
-  const lines = markdown.split(/\r?\n/);
-  const kept: string[] = [];
-  let fence: string | null = null;
-  for (const line of lines) {
-    const trimmed = line.trimStart();
-    if (fence === null) {
-      const open = /^(```+|~~~+)/.exec(trimmed);
-      if (open?.[1] !== undefined) {
-        fence = open[1][0] ?? "`";
-        continue;
-      }
-      kept.push(line.replace(/`[^`]*`/g, ""));
-    } else if (trimmed.startsWith(fence.repeat(3))) {
-      fence = null;
-    }
-  }
-  return kept.join("\n");
-}
-
-function parseLinkTarget(rawInside: string): string | null {
-  const trimmed = rawInside.trim();
-  if (trimmed.length === 0) return null;
-  if (trimmed.startsWith("<")) {
-    const close = trimmed.indexOf(">");
-    return close > 1 ? trimmed.slice(1, close).trim() : null;
-  }
-  const spaceIndex = trimmed.search(/\s/);
-  return spaceIndex === -1 ? trimmed : trimmed.slice(0, spaceIndex);
-}
-
 function isRelativeFileLink(target: string): boolean {
   if (target.length === 0) return false;
   if (target.startsWith("#") || target.startsWith("/")) return false;
@@ -206,16 +183,26 @@ function isRelativeFileLink(target: string): boolean {
 }
 
 function extractRelativeMarkdownLinks(markdown: string): readonly string[] {
-  const cleaned = stripMarkdownCode(markdown);
   const links: string[] = [];
-  const pattern = /!?\[[^\]]*\]\(([^)\n]+)\)/g;
-  for (const match of cleaned.matchAll(pattern)) {
-    const rawInside = match[1];
-    if (rawInside === undefined) continue;
-    const target = parseLinkTarget(rawInside);
-    if (target === null || !isRelativeFileLink(target)) continue;
-    links.push(target);
-  }
+  const collect = (rawTarget: string | undefined) => {
+    if (rawTarget === undefined) return;
+    const trimmed = rawTarget.trim();
+    if (isRelativeFileLink(trimmed)) {
+      links.push(trimmed);
+    }
+  };
+  Bun.markdown.render(markdown, {
+    link(children, meta) {
+      collect(meta.href);
+      return children;
+    },
+    image(children, meta) {
+      collect(meta.src);
+      return children;
+    },
+    code: () => "",
+    codespan: () => "",
+  });
   return links;
 }
 
@@ -330,7 +317,9 @@ function splitCommandTokens(command: string): readonly string[] {
   return tokens;
 }
 
-function readPackageTestScript(packageJsonText: string | null): string | null {
+function readPackageScripts(
+  packageJsonText: string | null,
+): ReadonlyMap<string, string> | null {
   if (packageJsonText === null) return null;
   let parsed: unknown;
   try {
@@ -341,8 +330,13 @@ function readPackageTestScript(packageJsonText: string | null): string | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const scripts: unknown = Reflect.get(parsed, "scripts");
   if (typeof scripts !== "object" || scripts === null) return null;
-  const testScript: unknown = Reflect.get(scripts, "test");
-  return typeof testScript === "string" ? testScript.trim() : null;
+  const map = new Map<string, string>();
+  for (const [key, value] of Object.entries(scripts)) {
+    if (typeof value === "string") {
+      map.set(key, value.trim());
+    }
+  }
+  return map;
 }
 
 function filterBunTestTokens(tokens: readonly string[]): readonly string[] {
@@ -363,14 +357,76 @@ function filterBunTestTokens(tokens: readonly string[]): readonly string[] {
   return args;
 }
 
-export function extractBunTestArgs(
+function stripLeadingDoubleDash(tokens: readonly string[]): readonly string[] {
+  return tokens[0] === "--" ? tokens.slice(1) : tokens;
+}
+
+function extractAliasTarget(
+  tokens: readonly string[],
+  scripts: ReadonlyMap<string, string>,
+): { readonly name: string; readonly trailing: readonly string[] } | null {
+  const first = tokens[0];
+  const second = tokens[1];
+  const third = tokens[2];
+  if ((first === "bun" || first === "npm") && second === "run") {
+    if (third === undefined) return null;
+    return { name: third, trailing: stripLeadingDoubleDash(tokens.slice(3)) };
+  }
+  if (first === "bun" && second !== undefined && scripts.has(second)) {
+    return { name: second, trailing: stripLeadingDoubleDash(tokens.slice(2)) };
+  }
+  return null;
+}
+
+export function resolveBunTestScript(
   packageJsonText: string | null,
-): readonly string[] {
-  const testScript = readPackageTestScript(packageJsonText);
-  if (testScript === null) return [];
-  const tokens = splitCommandTokens(testScript);
-  if (tokens[0] !== "bun" || tokens[1] !== "test") return [];
-  return filterBunTestTokens(tokens.slice(2));
+): ResolvedTestScript {
+  const scripts = readPackageScripts(packageJsonText);
+  const initial = scripts?.get("test");
+  if (scripts === null || initial === undefined || initial.length === 0) {
+    return { kind: "bun-test", args: [] };
+  }
+  const visited = new Set<string>(["test"]);
+  let current = initial;
+  const trailingChunks: (readonly string[])[] = [];
+  for (;;) {
+    const tokens = splitCommandTokens(current);
+    if (tokens[0] === "bun" && tokens[1] === "test") {
+      return {
+        kind: "bun-test",
+        args: filterBunTestTokens([
+          ...tokens.slice(2),
+          ...trailingChunks.reverse().flat(),
+        ]),
+      };
+    }
+    const alias = extractAliasTarget(tokens, scripts);
+    if (alias === null) {
+      return {
+        kind: "unsupported",
+        script: current,
+        reason: `Test script "${current}" does not resolve to bun test.`,
+      };
+    }
+    if (visited.has(alias.name)) {
+      return {
+        kind: "unsupported",
+        script: current,
+        reason: `Test script "${current}" forms an alias loop on "${alias.name}".`,
+      };
+    }
+    const next = scripts.get(alias.name);
+    if (next === undefined || next.length === 0) {
+      return {
+        kind: "unsupported",
+        script: current,
+        reason: `Test script "${current}" references missing script "${alias.name}".`,
+      };
+    }
+    visited.add(alias.name);
+    trailingChunks.push(alias.trailing);
+    current = next;
+  }
 }
 
 export function parseBunTestDiscovery(

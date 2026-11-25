@@ -191,11 +191,15 @@ async function checkSourceAfter(
   resolved: ResolvedInputs,
   sourceEntries: readonly TreeEntry[],
 ): Promise<
-  | { readonly ok: true; readonly findings: readonly MoveFinding[] }
+  | {
+      readonly ok: true;
+      readonly findings: readonly MoveFinding[];
+      readonly notChecked: readonly NotCheckedItem[];
+    }
   | { readonly ok: false; readonly reason: string }
 > {
   if (resolved.kind !== "move" || resolved.sourceAfter === null) {
-    return { ok: true, findings: [] };
+    return { ok: true, findings: [], notChecked: [] };
   }
   const sourceAfterTree = await listTree(
     programs,
@@ -225,16 +229,22 @@ async function checkSourceAfter(
       )
     : sourceAfterTree.entries;
   const textFiles: { readonly repoPath: string; readonly text: string }[] = [];
+  const notChecked: NotCheckedItem[] = [];
   if (targets.length > 0) {
     for (const entry of checkedEntries) {
-      const text = await readBlobText(
+      const blob = await readBlobText(
         programs,
         resolved.binaries.git,
         resolved.sourceRepo,
         entry.hash,
       );
-      if (text !== null) {
-        textFiles.push({ repoPath: entry.repoPath, text });
+      if (blob.kind === "text") {
+        textFiles.push({ repoPath: entry.repoPath, text: blob.text });
+      } else if (blob.kind === "unreadable") {
+        notChecked.push({
+          check: "source-references",
+          reason: `Could not read ${entry.repoPath} in full: ${blob.reason}.`,
+        });
       }
     }
   }
@@ -249,6 +259,7 @@ async function checkSourceAfter(
       ...findSourceStaleReferences(textFiles, targets, destinationRecordPaths),
       ...findSourceKeptBlobs(sourceEntries, checkedEntries),
     ],
+    notChecked,
   };
 }
 
@@ -258,40 +269,56 @@ async function checkDestinationMarkdownLinks(
   sourceEntries: readonly TreeEntry[],
   destFolderEntries: readonly TreeEntry[],
   destAllEntries: readonly TreeEntry[],
-): Promise<readonly MoveFinding[]> {
+): Promise<{
+  readonly findings: readonly MoveFinding[];
+  readonly notChecked: readonly NotCheckedItem[];
+}> {
   const sourceRelatives = new Set(
     sourceEntries.map((entry) => entry.relativePath),
   );
   const movedMarkdown: { readonly repoPath: string; readonly text: string }[] =
     [];
+  const notChecked: NotCheckedItem[] = [];
   for (const entry of destFolderEntries) {
     if (!sourceRelatives.has(entry.relativePath)) continue;
     if (!entry.repoPath.toLowerCase().endsWith(".md")) continue;
-    const text = await readBlobText(
+    const blob = await readBlobText(
       programs,
       resolved.binaries.git,
       resolved.destinationRepo,
       entry.hash,
     );
-    if (text !== null) {
-      movedMarkdown.push({ repoPath: entry.repoPath, text });
+    if (blob.kind === "text") {
+      movedMarkdown.push({ repoPath: entry.repoPath, text: blob.text });
+    } else if (blob.kind === "unreadable") {
+      notChecked.push({
+        check: "markdown-links",
+        reason: `Could not read ${entry.repoPath} in full: ${blob.reason}.`,
+      });
     }
   }
-  return findBrokenMarkdownLinks(
-    movedMarkdown,
-    destAllEntries.map((entry) => entry.repoPath),
-  );
+  return {
+    findings: findBrokenMarkdownLinks(
+      movedMarkdown,
+      destAllEntries.map((entry) => entry.repoPath),
+    ),
+    notChecked,
+  };
 }
 
 async function checkDestinationTests(
   programs: ProgramsCapability,
   resolved: ResolvedInputs,
 ): Promise<
-  | { readonly ok: true; readonly findings: readonly MoveFinding[] }
-  | { readonly ok: false; readonly reason: string }
+  | {
+      readonly kind: "ok";
+      readonly findings: readonly MoveFinding[];
+      readonly notChecked: readonly NotCheckedItem[];
+    }
+  | { readonly kind: "failed"; readonly reason: string }
 > {
   if (resolved.destBefore === null) {
-    return { ok: true, findings: [] };
+    return { kind: "ok", findings: [], notChecked: [] };
   }
   const before = await discoverTestFileCount(
     programs,
@@ -299,7 +326,14 @@ async function checkDestinationTests(
     resolved.destinationRepo,
     resolved.destBefore,
   );
-  if (!before.ok) return before;
+  if (before.kind === "failed") return before;
+  if (before.kind === "unsupported") {
+    return {
+      kind: "ok",
+      findings: [],
+      notChecked: [{ check: "test-discovery", reason: before.reason }],
+    };
+  }
 
   const after = await discoverTestFileCount(
     programs,
@@ -307,11 +341,18 @@ async function checkDestinationTests(
     resolved.destinationRepo,
     resolved.destAfter,
   );
-  if (!after.ok) return after;
+  if (after.kind === "failed") return after;
+  if (after.kind === "unsupported") {
+    return {
+      kind: "ok",
+      findings: [],
+      notChecked: [{ check: "test-discovery", reason: after.reason }],
+    };
+  }
 
   if (after.count < before.count) {
     return {
-      ok: true,
+      kind: "ok",
       findings: [
         {
           cause: "DOMAIN_MOVE_TEST_DROPPED",
@@ -320,9 +361,10 @@ async function checkDestinationTests(
           afterCount: after.count,
         },
       ],
+      notChecked: [],
     };
   }
-  return { ok: true, findings: [] };
+  return { kind: "ok", findings: [], notChecked: [] };
 }
 
 function collectNotChecked(
@@ -399,10 +441,7 @@ export async function evaluateMove(
   );
   if (!sourceAfterResult.ok) return sourceAfterResult;
 
-  const testResult = await checkDestinationTests(programs, resolved);
-  if (!testResult.ok) return testResult;
-
-  const markdownFindings = await checkDestinationMarkdownLinks(
+  const markdownResult = await checkDestinationMarkdownLinks(
     programs,
     resolved,
     sourceTree.entries,
@@ -410,21 +449,43 @@ export async function evaluateMove(
     destAllTree.entries,
   );
 
-  const findings = orderFindings([
+  const otherFindings = orderFindings([
     ...compareTrees(sourceTree.entries, destFolderTree.entries),
-    ...markdownFindings,
+    ...markdownResult.findings,
     ...sourceAfterResult.findings,
-    ...testResult.findings,
   ]);
+  const baseNotChecked: readonly NotCheckedItem[] = [
+    ...collectNotChecked(resolved),
+    ...sourceAfterResult.notChecked,
+    ...markdownResult.notChecked,
+  ];
+  const files = sourceTree.entries.map((entry) => ({
+    path: entry.relativePath,
+    hash: entry.hash,
+  }));
+
+  const testResult = await checkDestinationTests(programs, resolved);
+  if (testResult.kind === "failed") {
+    if (otherFindings.length === 0) {
+      return { ok: false, reason: testResult.reason };
+    }
+    return {
+      ok: true,
+      kind: resolved.kind,
+      files,
+      findings: otherFindings,
+      notChecked: [
+        ...baseNotChecked,
+        { check: "test-discovery", reason: testResult.reason },
+      ],
+    };
+  }
 
   return {
     ok: true,
     kind: resolved.kind,
-    files: sourceTree.entries.map((entry) => ({
-      path: entry.relativePath,
-      hash: entry.hash,
-    })),
-    findings,
-    notChecked: collectNotChecked(resolved),
+    files,
+    findings: orderFindings([...otherFindings, ...testResult.findings]),
+    notChecked: [...baseNotChecked, ...testResult.notChecked],
   };
 }

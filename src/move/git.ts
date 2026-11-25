@@ -10,9 +10,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
 import {
-  extractBunTestArgs,
   parseBunTestDiscovery,
   parseTreeOutput,
+  resolveBunTestScript,
 } from "./rules.ts";
 import type { TreeEntry } from "./rules.ts";
 
@@ -79,7 +79,7 @@ export async function resolveGitDir(
     programs,
     git,
     repo,
-    ["rev-parse", "--absolute-git-dir"],
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
     65_536,
   );
   if (result.exitCode !== 0) {
@@ -143,12 +143,17 @@ export async function listTree(
   return { ok: true, entries: parseTreeOutput(result.stdout, folder) };
 }
 
+export type BlobReadResult =
+  | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "binary" }
+  | { readonly kind: "unreadable"; readonly reason: string };
+
 export async function readBlobText(
   programs: ProgramsCapability,
   git: ParsedPath,
   repo: string,
   hash: string,
-): Promise<string | null> {
+): Promise<BlobReadResult> {
   const result = await runGit(
     programs,
     git,
@@ -156,10 +161,18 @@ export async function readBlobText(
     ["cat-file", "blob", hash],
     blobOutputLimitBytes,
   );
-  if (result.exitCode !== 0 || result.stdout.includes("\0")) {
-    return null;
+  if (result.stdout.includes("\0")) {
+    return { kind: "binary" };
   }
-  return result.stdout;
+  if (result.outputTruncated) {
+    return { kind: "unreadable", reason: "exceeded 4 MiB read limit" };
+  }
+  if (result.exitCode !== 0) {
+    const detail =
+      result.stderr.trim() || `exit code ${String(result.exitCode)}`;
+    return { kind: "unreadable", reason: detail };
+  }
+  return { kind: "text", text: result.stdout };
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -179,15 +192,17 @@ async function readOptionalFile(path: string): Promise<string | null> {
   }
 }
 
+export type TestDiscoveryResult =
+  | { readonly kind: "count"; readonly count: number }
+  | { readonly kind: "unsupported"; readonly reason: string }
+  | { readonly kind: "failed"; readonly reason: string };
+
 export async function discoverTestFileCount(
   programs: ProgramsCapability,
   binaries: ToolBinaries,
   destinationRepo: string,
   commit: string,
-): Promise<
-  | { readonly ok: true; readonly count: number }
-  | { readonly ok: false; readonly reason: string }
-> {
+): Promise<TestDiscoveryResult> {
   const workDir = await mkdtemp(join(tmpdir(), "agent-gates-move-"));
   try {
     const archiveFile = join(workDir, "tree.tar");
@@ -204,7 +219,7 @@ export async function discoverTestFileCount(
     if (archiveResult.exitCode !== 0) {
       const detail = archiveResult.stderr.trim() || archiveResult.stdout.trim();
       return {
-        ok: false,
+        kind: "failed",
         reason: `Cannot export commit ${commit} from ${destinationRepo}: ${detail}`,
       };
     }
@@ -219,7 +234,7 @@ export async function discoverTestFileCount(
     if (extractResult.exitCode !== 0) {
       const detail = extractResult.stderr.trim() || extractResult.stdout.trim();
       return {
-        ok: false,
+        kind: "failed",
         reason: `Cannot extract archive for ${commit}: ${detail}`,
       };
     }
@@ -236,18 +251,25 @@ export async function discoverTestFileCount(
     const packageJsonText = await readOptionalFile(
       join(treeDir, "package.json"),
     );
-    const extraArgs = extractBunTestArgs(packageJsonText);
+    const resolvedScript = resolveBunTestScript(packageJsonText);
+    if (resolvedScript.kind === "unsupported") {
+      return { kind: "unsupported", reason: resolvedScript.reason };
+    }
 
     const testResult = await programs.inspect({
       executable: binaries.bun,
-      args: ["test", "--cwd", treeDir, "-t", "(?!)", ...extraArgs],
+      args: ["test", "--cwd", treeDir, "-t", "(?!)", ...resolvedScript.args],
       timeoutMilliseconds: defaultTimeoutMs,
       outputLimitBytes: testOutputLimitBytes,
       shutdownMilliseconds: defaultShutdownMs,
     });
 
     const combinedOutput = `${testResult.stdout}\n${testResult.stderr}`;
-    return parseBunTestDiscovery(combinedOutput);
+    const parsed = parseBunTestDiscovery(combinedOutput);
+    if (!parsed.ok) {
+      return { kind: "failed", reason: parsed.reason };
+    }
+    return { kind: "count", count: parsed.count };
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
