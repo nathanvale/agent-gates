@@ -215,88 +215,85 @@ function extractRelativeMarkdownLinks(markdown: string): readonly string[] {
   return links;
 }
 
-function normalizePosixSegments(segments: readonly string[]): string | null {
-  const stack: string[] = [];
-  for (const segment of segments) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") {
-      if (stack.length === 0) return null;
-      stack.pop();
-    } else {
-      stack.push(segment);
-    }
-  }
-  return stack.join("/");
-}
-
-function resolveMarkdownLink(
-  fromRepoPath: string,
-  rawTarget: string,
-): string | null {
+function decodeMarkdownLinkTarget(rawTarget: string): string {
   const withoutHash = rawTarget.split("#")[0] ?? "";
   const withoutQuery = withoutHash.split("?")[0] ?? "";
   if (withoutQuery.length === 0) return "";
-  let decoded: string;
   try {
-    decoded = decodeURIComponent(withoutQuery);
+    return decodeURIComponent(withoutQuery);
   } catch {
-    decoded = withoutQuery;
+    return withoutQuery;
   }
-  const slashIndex = fromRepoPath.lastIndexOf("/");
-  const baseDir = slashIndex === -1 ? "" : fromRepoPath.slice(0, slashIndex);
-  const combined =
-    baseDir === ""
-      ? decoded.split("/")
-      : [...baseDir.split("/"), ...decoded.split("/")];
-  return normalizePosixSegments(combined);
 }
 
-function resolveSymlinkStep(
-  currentPath: string,
+function initialFolderSegments(repoPath: string): string[] {
+  const slashIndex = repoPath.lastIndexOf("/");
+  return slashIndex === -1 ? [] : repoPath.slice(0, slashIndex).split("/");
+}
+
+function joinSegment(current: readonly string[], segment: string): string {
+  return current.length === 0 ? segment : `${current.join("/")}/${segment}`;
+}
+
+function pushSegmentsReversed(pending: string[], rawPath: string): void {
+  const segments = rawPath.split("/");
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    const segment = segments[index];
+    if (segment !== undefined) {
+      pending.push(segment);
+    }
+  }
+}
+
+function applySegment(
+  segment: string,
+  current: string[],
+  pending: string[],
   symlinks: ReadonlyMap<string, string>,
-):
-  | { readonly kind: "unchanged" }
-  | { readonly kind: "invalid" }
-  | { readonly kind: "next"; readonly path: string } {
-  const parts = currentPath.split("/");
-  for (let index = 1; index <= parts.length; index += 1) {
-    const prefix = parts.slice(0, index).join("/");
-    const rawTarget = symlinks.get(prefix);
-    if (rawTarget === undefined) continue;
-    if (rawTarget.length === 0 || rawTarget.startsWith("/")) {
-      return { kind: "invalid" };
-    }
-    const baseSegments = parts.slice(0, index - 1);
-    const restSegments = parts.slice(index);
-    const normalized = normalizePosixSegments([
-      ...baseSegments,
-      ...rawTarget.split("/"),
-      ...restSegments,
-    ]);
-    if (normalized === null) {
-      return { kind: "invalid" };
-    }
-    return { kind: "next", path: normalized };
+  hops: { count: number },
+): boolean {
+  if (segment === "" || segment === ".") return true;
+  if (segment === "..") {
+    if (current.length === 0) return false;
+    current.pop();
+    return true;
   }
-  return { kind: "unchanged" };
+  const symlinkTarget = symlinks.get(joinSegment(current, segment));
+  if (symlinkTarget === undefined) {
+    current.push(segment);
+    return true;
+  }
+  hops.count += 1;
+  if (
+    hops.count > maxSymlinkHops ||
+    symlinkTarget.length === 0 ||
+    symlinkTarget.startsWith("/")
+  ) {
+    return false;
+  }
+  pushSegmentsReversed(pending, symlinkTarget);
+  return true;
 }
 
-function resolveThroughSymlinks(
-  targetPath: string,
+function resolvePathThroughSymlinks(
+  fromRepoPath: string,
+  decodedTarget: string,
   symlinks: ReadonlyMap<string, string>,
 ): string | null {
-  if (symlinks.size === 0) return targetPath;
-  let current = targetPath;
-  const seen = new Set<string>([current]);
-  for (let hop = 0; hop < maxSymlinkHops; hop += 1) {
-    const step = resolveSymlinkStep(current, symlinks);
-    if (step.kind === "unchanged") return current;
-    if (step.kind === "invalid") return null;
-    if (seen.has(step.path)) return null;
-    seen.add(step.path);
-    current = step.path;
+  const current = initialFolderSegments(fromRepoPath);
+  const pending: string[] = [];
+  pushSegmentsReversed(pending, decodedTarget);
+  const hops = { count: 0 };
+
+  while (pending.length > 0) {
+    const segment = pending.pop();
+    if (segment === undefined) continue;
+    if (!applySegment(segment, current, pending, symlinks, hops)) {
+      return null;
+    }
   }
-  return null;
+
+  return current.join("/");
 }
 
 function buildDestinationIndex(destinationEntries: readonly TreeEntry[]): {
@@ -326,10 +323,13 @@ function isLinkTargetResolved(
   },
   symlinks: ReadonlyMap<string, string>,
 ): boolean {
-  const resolved = resolveMarkdownLink(fromRepoPath, rawTarget);
-  if (resolved === "") return true;
-  if (resolved === null) return false;
-  const finalTarget = resolveThroughSymlinks(resolved, symlinks);
+  const decoded = decodeMarkdownLinkTarget(rawTarget);
+  if (decoded === "") return true;
+  const finalTarget = resolvePathThroughSymlinks(
+    fromRepoPath,
+    decoded,
+    symlinks,
+  );
   if (finalTarget === null) return false;
   if (finalTarget === "") return true;
   return index.pathSet.has(finalTarget) || index.dirSet.has(finalTarget);
