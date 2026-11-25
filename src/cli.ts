@@ -1,12 +1,7 @@
-import { contractFor, runProcess } from "agent-cli-kernel";
-import { commands } from "./commands.ts";
-import { causes } from "./shared/causes.ts";
+import { runProcess } from "agent-cli-kernel";
+import { programsAddon } from "agent-cli-kernel/addons/programs";
+import { contract } from "./commands.ts";
 
-const contract = contractFor({
-  cli: "agent-gates",
-  commands,
-  causes,
-  installedAddons: [],
-});
-
-await runProcess(contract)(process.argv.slice(2));
+await runProcess(contract, {
+  addons: { programs: programsAddon() },
+})(process.argv.slice(2));
