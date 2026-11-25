@@ -13,6 +13,7 @@ import {
 import { scanDiffOutput } from "./diff.ts";
 import {
   readOriginSlug,
+  readRangeAddedPaths,
   readRangeDiff,
   resolveGitBinary,
   resolveRangeCommits,
@@ -23,7 +24,9 @@ import {
   formatRefusalMessage,
   parsePatternFile,
   parseRangeSpec,
+  redactText,
   scanCommitMessages,
+  scanCommitPaths,
   scanPullRequestParts,
 } from "./rules.ts";
 import type { CompiledPattern, HistoryFinding } from "./rules.ts";
@@ -98,6 +101,7 @@ type HistoryScanEvaluation =
       readonly commitsScanned: number;
       readonly pullRequestsScanned: number;
       readonly findings: readonly HistoryFinding[];
+      readonly patterns: readonly CompiledPattern[];
     }
   | {
       readonly ok: false;
@@ -106,6 +110,7 @@ type HistoryScanEvaluation =
         | "DOMAIN_HISTORY_PATTERN_FILE_MISSING"
         | typeof preconditionUnmet;
       readonly reason: string;
+      readonly patterns: readonly CompiledPattern[];
     };
 
 async function evaluateHistoryScan(
@@ -124,6 +129,7 @@ async function evaluateHistoryScan(
       ok: false,
       cause: "DOMAIN_HISTORY_RANGE_MISSING",
       reason: parsedRange.reason,
+      patterns: [],
     };
   }
 
@@ -133,8 +139,10 @@ async function evaluateHistoryScan(
       ok: false,
       cause: "DOMAIN_HISTORY_PATTERN_FILE_MISSING",
       reason: loadedPatterns.reason,
+      patterns: [],
     };
   }
+  const { patterns } = loadedPatterns;
 
   const gitResolved = resolveGitBinary(parsePath);
   if (!gitResolved.ok) {
@@ -142,6 +150,7 @@ async function evaluateHistoryScan(
       ok: false,
       cause: preconditionUnmet,
       reason: gitResolved.reason,
+      patterns,
     };
   }
 
@@ -151,6 +160,7 @@ async function evaluateHistoryScan(
       ok: false,
       cause: preconditionUnmet,
       reason: repoCheck.reason,
+      patterns,
     };
   }
 
@@ -169,6 +179,23 @@ async function evaluateHistoryScan(
           ? "DOMAIN_HISTORY_RANGE_MISSING"
           : preconditionUnmet,
       reason: commitsResult.reason,
+      patterns,
+    };
+  }
+
+  const addedPathsResult = await readRangeAddedPaths(
+    programs,
+    gitResolved.git,
+    cwd,
+    parsedRange.base,
+    parsedRange.head,
+  );
+  if (!addedPathsResult.ok) {
+    return {
+      ok: false,
+      cause: preconditionUnmet,
+      reason: addedPathsResult.reason,
+      patterns,
     };
   }
 
@@ -184,12 +211,14 @@ async function evaluateHistoryScan(
       ok: false,
       cause: preconditionUnmet,
       reason: diffResult.reason,
+      patterns,
     };
   }
 
   const findings: HistoryFinding[] = [
-    ...scanCommitMessages(commitsResult.commits, loadedPatterns.patterns),
-    ...scanDiffOutput(diffResult.diff, loadedPatterns.patterns),
+    ...scanCommitMessages(commitsResult.commits, patterns),
+    ...scanCommitPaths(addedPathsResult.paths, patterns),
+    ...scanDiffOutput(diffResult.diff, patterns),
   ];
 
   const prResult = await scanPullRequests(
@@ -198,13 +227,14 @@ async function evaluateHistoryScan(
     gitResolved.git,
     cwd,
     options.pullRequests,
-    loadedPatterns.patterns,
+    patterns,
   );
   if (!prResult.ok) {
     return {
       ok: false,
       cause: preconditionUnmet,
       reason: prResult.reason,
+      patterns,
     };
   }
   findings.push(...prResult.findings);
@@ -214,6 +244,7 @@ async function evaluateHistoryScan(
     commitsScanned: commitsResult.commits.length,
     pullRequestsScanned: options.pullRequests.length,
     findings,
+    patterns,
   };
 }
 
@@ -366,7 +397,7 @@ export function createHistoryScan(
         return context.result(
           { commandIdentity, causeCode: evaluated.cause },
           {
-            message: evaluated.reason,
+            message: redactText(evaluated.reason, evaluated.patterns),
             data: null,
             effects: nothingChanged,
           },
@@ -377,7 +408,10 @@ export function createHistoryScan(
         return context.result(
           { commandIdentity, causeCode: "DOMAIN_HISTORY_PRIVATE_MATCH" },
           {
-            message: formatRefusalMessage(evaluated.findings),
+            message: redactText(
+              formatRefusalMessage(evaluated.findings),
+              evaluated.patterns,
+            ),
             data: null,
             effects: nothingChanged,
           },
@@ -387,7 +421,10 @@ export function createHistoryScan(
       return context.result(
         { commandIdentity, causeCode: unchangedSuccess },
         {
-          message: `History scan clean: ${String(evaluated.commitsScanned)} commit${evaluated.commitsScanned === 1 ? "" : "s"} and ${String(evaluated.pullRequestsScanned)} pull request${evaluated.pullRequestsScanned === 1 ? "" : "s"} scanned.`,
+          message: redactText(
+            `History scan clean: ${String(evaluated.commitsScanned)} commit${evaluated.commitsScanned === 1 ? "" : "s"} and ${String(evaluated.pullRequestsScanned)} pull request${evaluated.pullRequestsScanned === 1 ? "" : "s"} scanned.`,
+            evaluated.patterns,
+          ),
           data: {
             commitsScanned: evaluated.commitsScanned,
             pullRequestsScanned: evaluated.pullRequestsScanned,

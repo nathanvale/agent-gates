@@ -10,6 +10,11 @@ export type CommitMeta = {
   readonly message: string;
 };
 
+export type CommitAddedPath = {
+  readonly commit: string;
+  readonly path: string;
+};
+
 export type PullRequestPartKind =
   | "title"
   | "body"
@@ -145,15 +150,69 @@ export function parseOriginSlug(remoteUrl: string): string | null {
   return null;
 }
 
-export function redactPath(
-  filePath: string,
+export function redactText(
+  text: string,
   patterns: readonly CompiledPattern[],
 ): string {
-  let redacted = filePath;
+  let redacted = text;
   for (const pattern of patterns) {
     redacted = redacted.replace(pattern.globalRegex, "[redacted]");
   }
   return redacted;
+}
+
+function consumeNameStatusEntry(
+  tokens: readonly string[],
+  index: number,
+  status: string,
+  commit: string,
+  entries: CommitAddedPath[],
+): number {
+  if (/^[RC]\d*$/.test(status)) {
+    const destination = tokens[index + 2];
+    if (destination !== undefined && destination !== "") {
+      entries.push({ commit, path: destination });
+    }
+    return index + 3;
+  }
+  const filePath = tokens[index + 1];
+  if (/^A+$/.test(status) && filePath !== undefined && filePath !== "") {
+    entries.push({ commit, path: filePath });
+  }
+  return index + 2;
+}
+
+export function parseAddedPaths(nulOutput: string): readonly CommitAddedPath[] {
+  if (nulOutput === "") {
+    return [];
+  }
+  const tokens = nulOutput.split("\0");
+  const entries: CommitAddedPath[] = [];
+  let currentCommit: string | null = null;
+  let index = 0;
+
+  while (index < tokens.length) {
+    const raw = tokens[index] ?? "";
+    const token = raw.startsWith("\n") ? raw.slice(1) : raw;
+    if (token === "") {
+      index += 1;
+    } else if (token.startsWith(commitMarkerPrefix)) {
+      currentCommit = token.slice(commitMarkerPrefix.length).trim() || null;
+      index += 1;
+    } else if (currentCommit === null) {
+      index += 1;
+    } else {
+      index = consumeNameStatusEntry(
+        tokens,
+        index,
+        token,
+        currentCommit,
+        entries,
+      );
+    }
+  }
+
+  return entries;
 }
 
 export function parseCommitMessages(nulOutput: string): readonly CommitMeta[] {
@@ -196,6 +255,24 @@ export function scanCommitMessages(
       findings.push({
         kind: "commit-message",
         commit: commit.shortHash,
+        patternLine,
+      });
+    }
+  }
+  return findings;
+}
+
+export function scanCommitPaths(
+  entries: readonly CommitAddedPath[],
+  patterns: readonly CompiledPattern[],
+): readonly HistoryFinding[] {
+  const findings: HistoryFinding[] = [];
+  for (const entry of entries) {
+    for (const patternLine of matchingPatternLines(entry.path, patterns)) {
+      findings.push({
+        kind: "commit-path",
+        commit: entry.commit,
+        path: redactText(entry.path, patterns),
         patternLine,
       });
     }

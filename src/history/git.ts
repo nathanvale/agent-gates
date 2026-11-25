@@ -1,16 +1,33 @@
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
 import {
   commitMarkerPrefix,
+  parseAddedPaths,
   parseCommitMessages,
   parseOriginSlug,
 } from "./rules.ts";
-import type { CommitMeta } from "./rules.ts";
+import type { CommitAddedPath, CommitMeta } from "./rules.ts";
 
 const defaultTimeoutMs = 30_000;
 const defaultShutdownMs = 1_000;
 const smallOutputLimitBytes = 262_144;
 const messagesOutputLimitBytes = 16_777_216;
 const diffOutputLimitBytes = 67_108_864;
+const gitLogConfigArgs: readonly string[] = [
+  "-c",
+  "core.quotepath=false",
+  "-c",
+  "color.ui=false",
+  "-c",
+  "log.showSignature=false",
+  "-c",
+  "diff.noprefix=false",
+  "-c",
+  "diff.mnemonicPrefix=false",
+  "-c",
+  "diff.relative=false",
+  "-c",
+  "diff.renames=true",
+];
 
 export function resolveGitBinary(
   parsePath: (raw: string) => ParsedPath,
@@ -99,7 +116,14 @@ export async function resolveRangeCommits(
     programs,
     git,
     cwd,
-    ["log", "-z", "--format=%H%x00%h%x00%B", `${base}..${head}`],
+    [
+      ...gitLogConfigArgs,
+      "log",
+      "--no-color",
+      "-z",
+      "--format=%H%x00%h%x00%B",
+      `${base}..${head}`,
+    ],
     messagesOutputLimitBytes,
   );
   if (logResult.outputTruncated) {
@@ -130,6 +154,51 @@ export async function resolveRangeCommits(
   return { ok: true, commits };
 }
 
+export async function readRangeAddedPaths(
+  programs: ProgramsCapability,
+  git: ParsedPath,
+  cwd: string,
+  base: string,
+  head: string,
+): Promise<
+  | { readonly ok: true; readonly paths: readonly CommitAddedPath[] }
+  | { readonly ok: false; readonly reason: string }
+> {
+  const result = await runGit(
+    programs,
+    git,
+    cwd,
+    [
+      ...gitLogConfigArgs,
+      "log",
+      `--format=${commitMarkerPrefix}%h`,
+      "--name-status",
+      "-z",
+      "-M",
+      "--no-color",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--diff-merges=cc",
+      `${base}..${head}`,
+    ],
+    messagesOutputLimitBytes,
+  );
+  if (result.outputTruncated) {
+    return {
+      ok: false,
+      reason: "Commit path listing exceeded the 16 MiB read limit.",
+    };
+  }
+  if (result.exitCode !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim();
+    return {
+      ok: false,
+      reason: `git log name-status failed for range ${base}..${head}: ${detail}`,
+    };
+  }
+  return { ok: true, paths: parseAddedPaths(result.stdout) };
+}
+
 export async function readRangeDiff(
   programs: ProgramsCapability,
   git: ParsedPath,
@@ -145,15 +214,18 @@ export async function readRangeDiff(
     git,
     cwd,
     [
-      "-c",
-      "core.quotepath=false",
+      ...gitLogConfigArgs,
       "log",
       `--format=${commitMarkerPrefix}%H%x00%h`,
       "-p",
       "--unified=0",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
       "--text",
+      "--no-color",
       "--no-ext-diff",
       "--no-textconv",
+      "-M",
       "--diff-merges=cc",
       `${base}..${head}`,
     ],
