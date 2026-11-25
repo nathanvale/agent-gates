@@ -18,3 +18,9 @@ The final `## Earlier changes` section of `CHANGELOG.md`, listing pull requests 
 **Move**:
 Files carried from a source tree (repository, commit, folder) to a destination tree, by copy, import or merge.
 _Avoid_: the act of moving; a Move is the record of what was carried
+
+**History**:
+The commits in a range plus their pull request bodies, never the working tree.
+
+**Private pattern list**:
+A file outside source, read at run time, one pattern per line.

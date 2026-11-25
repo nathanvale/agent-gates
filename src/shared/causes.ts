@@ -22,6 +22,9 @@ export const causes = {
   DOMAIN_MOVE_REFERENCE_DANGLING: domainRefusal,
   DOMAIN_MOVE_SOURCE_KEPT: domainRefusal,
   DOMAIN_MOVE_TEST_DROPPED: domainRefusal,
+  DOMAIN_HISTORY_RANGE_MISSING: domainRefusal,
+  DOMAIN_HISTORY_PATTERN_FILE_MISSING: domainRefusal,
+  DOMAIN_HISTORY_PRIVATE_MATCH: domainRefusal,
 } as const satisfies CauseTable;
 
 export const preconditionUnmet =
