@@ -1,16 +1,27 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { readFileSync, rmSync, symlinkSync } from "node:fs";
+import { readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  cleanGitEnv,
   commitAll,
   initRepo,
   invokeMoveCheckJson,
+  invokeMoveCheckJsonWithEnv,
   runGit,
   writeFiles,
 } from "./support/move-check.ts";
 import { testFolder } from "./support/test-folder.ts";
 
 setDefaultTimeout(30_000);
+
+function normalizeEnvelope(envelope: unknown): unknown {
+  if (typeof envelope !== "object" || envelope === null) return envelope;
+  const copy: Record<string, unknown> = { ...envelope };
+  if (typeof copy.result === "object" && copy.result !== null) {
+    copy.result = { ...copy.result, runId: "<runId>" };
+  }
+  return copy;
+}
 
 describe("move check hardening: links, scripts, and git env isolation", () => {
   test("Markdown extensions: checks relative links in .markdown files", () => {
@@ -327,6 +338,118 @@ describe("move check hardening: links, scripts, and git env isolation", () => {
       } else {
         process.env.GIT_WORK_TREE = savedGitWorkTree;
       }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Inherited GIT_DIR and GIT_WORK_TREE: test discovery strips git location vars and leaves another repository untouched", () => {
+    const root = testFolder("move-test-discovery-git-env-");
+    try {
+      const other = join(root, "other");
+      initRepo(other);
+      writeFiles(other, { "sentinel.txt": "do not touch\n" });
+      commitAll(other, "other initial");
+
+      const otherHeadBefore = runGit(other, ["rev-parse", "HEAD"]);
+      const otherIndexBefore = readFileSync(join(other, ".git", "index"));
+      const otherConfigBefore = readFileSync(
+        join(other, ".git", "config"),
+        "utf8",
+      );
+
+      const source = join(root, "source");
+      const destination = join(root, "destination");
+      initRepo(source);
+      initRepo(destination);
+
+      writeFiles(source, { "pkg/item.txt": "moved item\n" });
+      const sourceCommit = commitAll(source, "source item");
+
+      const expectedHeadFile = join(root, "expected-head.txt");
+      const repoAwareTest = [
+        'import { expect, test } from "bun:test";',
+        'import { readFileSync } from "node:fs";',
+        `const child = Bun.spawnSync(["git", "-C", ${JSON.stringify(destination)}, "rev-parse", "HEAD"]);`,
+        "if (child.exitCode !== 0) throw new Error(child.stderr.toString());",
+        "const actualHead = child.stdout.toString().trim();",
+        `const expectedHead = readFileSync(${JSON.stringify(expectedHeadFile)}, "utf8").trim();`,
+        "if (actualHead !== expectedHead) {",
+        "  throw new Error(`Expected destination HEAD ${expectedHead}, got ${actualHead}`);",
+        "}",
+        'test("repo head matches", () => expect(actualHead).toBe(expectedHead));',
+        "",
+      ].join("\n");
+
+      writeFiles(destination, {
+        "package.json": JSON.stringify({
+          name: "dest-git-env-test",
+          scripts: { test: "bun test" },
+        }),
+        "tests/repo-head.test.ts": repoAwareTest,
+      });
+      const destBefore = commitAll(destination, "dest before move");
+
+      writeFiles(destination, { "pkg/item.txt": "moved item\n" });
+      const destAfter = commitAll(destination, "dest after move");
+      writeFileSync(expectedHeadFile, `${destAfter}\n`, "utf8");
+
+      const argv = [
+        "--source",
+        source,
+        "--source-commit",
+        sourceCommit,
+        "--source-folder",
+        "pkg",
+        "--destination",
+        destination,
+        "--destination-commit",
+        `${destBefore}..${destAfter}`,
+        "--destination-folder",
+        "pkg",
+        "--kind",
+        "copy",
+      ];
+
+      const cleanEnv = cleanGitEnv();
+
+      const baseline = invokeMoveCheckJsonWithEnv(cleanEnv, ...argv);
+      const polluted = invokeMoveCheckJsonWithEnv(
+        {
+          ...cleanEnv,
+          GIT_DIR: join(other, ".git"),
+          GIT_WORK_TREE: other,
+        },
+        ...argv,
+      );
+
+      expect(baseline.exitCode).toBe(0);
+      expect(baseline.stderr).toBe("");
+      expect(baseline.envelope).toMatchObject({
+        result: {
+          commandIdentity: "agent-gates.move-check",
+          causeCode: "SUCCESS_UNCHANGED",
+          exitCode: 0,
+          outcome: "success",
+          data: {
+            findings: [],
+            notChecked: [],
+          },
+        },
+      });
+      expect(polluted.exitCode).toBe(baseline.exitCode);
+      expect(polluted.stderr).toBe(baseline.stderr);
+      expect(normalizeEnvelope(polluted.envelope)).toEqual(
+        normalizeEnvelope(baseline.envelope),
+      );
+
+      expect(runGit(other, ["rev-parse", "HEAD"])).toBe(otherHeadBefore);
+      expect(readFileSync(join(other, ".git", "index"))).toEqual(
+        otherIndexBefore,
+      );
+      expect(readFileSync(join(other, ".git", "config"), "utf8")).toBe(
+        otherConfigBefore,
+      );
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });

@@ -1,11 +1,7 @@
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
 import { discoverTestFileCount, listTree, readBlobText } from "./git.ts";
 import { resolveInputs } from "./inputs.ts";
-import type {
-  MoveCheckOptions,
-  RawMoveInput,
-  ResolvedInputs,
-} from "./inputs.ts";
+import type { RawMoveInput, ResolvedInputs } from "./inputs.ts";
 import {
   collectDestinationRecordPaths,
   collectMovedPathTargets,
@@ -26,8 +22,6 @@ import type {
   NotCheckedItem,
   TreeEntry,
 } from "./rules.ts";
-
-export type { MoveCheckOptions } from "./inputs.ts";
 
 export type MoveEvaluation =
   | {
@@ -73,7 +67,6 @@ async function checkSourceAfter(
     resolved.sourceRepo,
     resolved.sourceAfter,
     "",
-    resolved.treeOutputLimitBytes,
   );
   if (!sourceAfterTree.ok) return sourceAfterTree;
 
@@ -306,9 +299,8 @@ export async function evaluateMove(
   programs: ProgramsCapability,
   parsePath: (raw: string) => ParsedPath,
   raw: RawMoveInput,
-  options?: MoveCheckOptions,
 ): Promise<MoveEvaluation> {
-  const resolvedResult = await resolveInputs(programs, parsePath, raw, options);
+  const resolvedResult = await resolveInputs(programs, parsePath, raw);
   if (!resolvedResult.ok) return resolvedResult;
   const { resolved } = resolvedResult;
 
@@ -318,7 +310,6 @@ export async function evaluateMove(
     resolved.sourceRepo,
     resolved.sourceBefore,
     resolved.sourceFolder,
-    resolved.treeOutputLimitBytes,
   );
   if (!sourceTree.ok) return sourceTree;
   if (sourceTree.entries.length === 0) {
@@ -339,7 +330,6 @@ export async function evaluateMove(
     resolved.destinationRepo,
     resolved.destAfter,
     resolved.destinationFolder,
-    resolved.treeOutputLimitBytes,
   );
   if (!destFolderTree.ok) return destFolderTree;
   if (destFolderTree.entries.length === 0) {
@@ -363,7 +353,6 @@ export async function evaluateMove(
           resolved.destinationRepo,
           resolved.destAfter,
           "",
-          resolved.treeOutputLimitBytes,
         );
   if (!destAllTree.ok) return destAllTree;
 

@@ -1,14 +1,11 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { contractFor, runInProcess } from "agent-cli-kernel";
-import { programsAddon } from "agent-cli-kernel/addons/programs";
-import { createMoveCheck } from "../src/move/check.ts";
-import { causes } from "../src/shared/causes.ts";
 import {
   commitAll,
   initRepo,
   invokeMoveCheckJson,
+  runGit,
   writeFiles,
 } from "./support/move-check.ts";
 import { testFolder } from "./support/test-folder.ts";
@@ -218,7 +215,7 @@ describe("move check hardening: tree export and listing", () => {
     }
   });
 
-  test("Truncated ls-tree output: refuses DOMAIN_PRECONDITION_UNMET when listing exceeds output limit", async () => {
+  test("Truncated ls-tree output: refuses DOMAIN_PRECONDITION_UNMET when listing exceeds output limit", () => {
     const root = testFolder("move-tree-truncated-");
     try {
       const source = join(root, "source");
@@ -226,33 +223,49 @@ describe("move check hardening: tree export and listing", () => {
       initRepo(source);
       initRepo(destination);
 
-      const files: Record<string, string> = {};
-      for (let index = 0; index < 8; index += 1) {
-        files[`pkg/file-with-long-name-${String(index)}.txt`] =
-          `content ${String(index)}\n`;
+      const blob = runGit(source, ["hash-object", "-w", "--stdin"], "x\n");
+      const leafLines: string[] = [];
+      for (let index = 0; index < 100; index += 1) {
+        const suffix = String(index).padStart(2, "0");
+        leafLines.push(
+          `100644 blob ${blob}\tleaf-0000000000000000000000000000000000000000-${suffix}.txt`,
+        );
       }
-      writeFiles(source, files);
-      const sourceCommit = commitAll(source, "source many files");
+      const leafTree = runGit(source, ["mktree"], `${leafLines.join("\n")}\n`);
 
-      writeFiles(destination, files);
-      const destinationCommit = commitAll(destination, "dest many files");
+      const midLines: string[] = [];
+      for (let index = 0; index < 100; index += 1) {
+        const suffix = String(index).padStart(2, "0");
+        midLines.push(
+          `040000 tree ${leafTree}\tmid-0000000000000000000000000000000000000000-${suffix}`,
+        );
+      }
+      const midTree = runGit(source, ["mktree"], `${midLines.join("\n")}\n`);
 
-      const moveCheck = createMoveCheck(() => customContract.boundary.path, {
-        treeOutputLimitBytes: 128,
-      });
-      const customContract = contractFor({
-        cli: "agent-gates",
-        commands: [moveCheck],
-        causes,
-        installedAddons: ["programs"],
-      });
-      const run = runInProcess(customContract, {
-        addons: { programs: programsAddon() },
-      });
+      const topLines: string[] = [];
+      for (let index = 0; index < 10; index += 1) {
+        const suffix = String(index).padStart(2, "0");
+        topLines.push(
+          `040000 tree ${midTree}\ttop-0000000000000000000000000000000000000000-${suffix}`,
+        );
+      }
+      const topTree = runGit(source, ["mktree"], `${topLines.join("\n")}\n`);
+      const rootTree = runGit(
+        source,
+        ["mktree"],
+        `040000 tree ${topTree}\tpkg\n`,
+      );
+      const sourceCommit = runGit(source, [
+        "commit-tree",
+        rootTree,
+        "-m",
+        "oversized source tree",
+      ]);
 
-      const ran = await run([
-        "move",
-        "check",
+      writeFiles(destination, { "pkg/placeholder.txt": "placeholder\n" });
+      const destinationCommit = commitAll(destination, "dest placeholder");
+
+      const ran = invokeMoveCheckJson(
         "--source",
         source,
         "--source-commit",
@@ -265,18 +278,19 @@ describe("move check hardening: tree export and listing", () => {
         destinationCommit,
         "--destination-folder",
         "pkg",
-      ]);
-      if (ran.kind !== "envelope") {
-        throw new Error(`Expected envelope, got ${ran.kind}.`);
-      }
+      );
 
-      expect(ran.envelope.result).toMatchObject({
-        commandIdentity: "agent-gates.move-check",
-        causeCode: "DOMAIN_PRECONDITION_UNMET",
-        exitCode: 3,
-        outcome: "refused",
+      expect(ran.exitCode).toBe(3);
+      expect(ran.stderr).toBe("");
+      expect(ran.envelope).toMatchObject({
+        result: {
+          commandIdentity: "agent-gates.move-check",
+          causeCode: "DOMAIN_PRECONDITION_UNMET",
+          exitCode: 3,
+          outcome: "refused",
+        },
       });
-      expect(ran.envelope.message).toContain("output limit");
+      expect(JSON.stringify(ran.envelope)).toContain("output limit");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

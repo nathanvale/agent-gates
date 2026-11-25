@@ -15,7 +15,7 @@ import { parseBunTestDiscovery, resolveBunTestScript } from "./test-script.ts";
 
 const defaultTimeoutMs = 15_000;
 const defaultShutdownMs = 1_000;
-export const defaultTreeOutputLimitBytes = 16_777_216;
+const treeOutputLimitBytes = 16_777_216;
 const blobOutputLimitBytes = 4_194_304;
 const testOutputLimitBytes = 2_097_152;
 
@@ -59,6 +59,23 @@ export function resolveToolBinaries(
   };
 }
 
+async function runWithCleanGitEnv(
+  programs: ProgramsCapability,
+  binaries: ToolBinaries,
+  executable: ParsedPath,
+  extraEnv: readonly string[],
+  args: readonly string[],
+  outputLimitBytes: number,
+) {
+  return programs.inspect({
+    executable: binaries.env,
+    args: [...unsetGitEnvArgs, ...extraEnv, executable, ...args],
+    timeoutMilliseconds: defaultTimeoutMs,
+    outputLimitBytes,
+    shutdownMilliseconds: defaultShutdownMs,
+  });
+}
+
 async function runGitWithEnv(
   programs: ProgramsCapability,
   binaries: ToolBinaries,
@@ -66,13 +83,14 @@ async function runGitWithEnv(
   args: readonly string[],
   outputLimitBytes: number,
 ) {
-  return programs.inspect({
-    executable: binaries.env,
-    args: [...unsetGitEnvArgs, ...extraEnv, binaries.git, ...args],
-    timeoutMilliseconds: defaultTimeoutMs,
+  return runWithCleanGitEnv(
+    programs,
+    binaries,
+    binaries.git,
+    extraEnv,
+    args,
     outputLimitBytes,
-    shutdownMilliseconds: defaultShutdownMs,
-  });
+  );
 }
 
 async function runGit(
@@ -188,7 +206,6 @@ export async function listTree(
   repo: string,
   commit: string,
   folder: string,
-  outputLimitBytes = defaultTreeOutputLimitBytes,
 ): Promise<
   | { readonly ok: true; readonly entries: readonly TreeEntry[] }
   | { readonly ok: false; readonly reason: string }
@@ -197,11 +214,17 @@ export async function listTree(
     folder === ""
       ? ["ls-tree", "-r", "-z", "--full-tree", commit]
       : ["ls-tree", "-r", "-z", "--full-tree", commit, "--", folder];
-  const result = await runGit(programs, binaries, repo, args, outputLimitBytes);
+  const result = await runGit(
+    programs,
+    binaries,
+    repo,
+    args,
+    treeOutputLimitBytes,
+  );
   if (result.outputTruncated) {
     return {
       ok: false,
-      reason: `Git tree listing at ${commit} in ${repo} exceeded the ${String(outputLimitBytes)} byte output limit.`,
+      reason: `Git tree listing at ${commit} in ${repo} exceeded the ${String(treeOutputLimitBytes)} byte output limit.`,
     };
   }
   if (result.exitCode !== 0) {
@@ -371,13 +394,14 @@ export async function discoverTestFileCount(
       return { kind: "unsupported", reason: resolvedScript.reason };
     }
 
-    const testResult = await programs.inspect({
-      executable: binaries.bun,
-      args: ["test", "--cwd", treeDir, "-t", "(?!)", ...resolvedScript.args],
-      timeoutMilliseconds: defaultTimeoutMs,
-      outputLimitBytes: testOutputLimitBytes,
-      shutdownMilliseconds: defaultShutdownMs,
-    });
+    const testResult = await runWithCleanGitEnv(
+      programs,
+      binaries,
+      binaries.bun,
+      [],
+      ["test", "--cwd", treeDir, "-t", "(?!)", ...resolvedScript.args],
+      testOutputLimitBytes,
+    );
 
     const combinedOutput = `${testResult.stdout}\n${testResult.stderr}`;
     const parsed = parseBunTestDiscovery(combinedOutput);

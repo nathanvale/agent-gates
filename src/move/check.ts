@@ -10,7 +10,6 @@ import {
 } from "../shared/causes.ts";
 import type { MoveFinding, NotCheckedItem } from "./rules.ts";
 import { evaluateMove } from "./runner.ts";
-import type { MoveCheckOptions } from "./runner.ts";
 
 const commandIdentity = "agent-gates.move-check";
 
@@ -50,7 +49,6 @@ function formatRefusalMessage(
 
 export function createMoveCheck(
   getParsePath: () => (raw: string) => ParsedPath,
-  options?: MoveCheckOptions,
 ) {
   return command({
     identity: commandIdentity,
@@ -274,20 +272,15 @@ export function createMoveCheck(
       }),
     ],
     run: async (input, context) => {
-      const evaluated = await evaluateMove(
-        context.programs,
-        getParsePath(),
-        {
-          source: input["--source"],
-          sourceCommit: input["--source-commit"],
-          sourceFolder: input["--source-folder"],
-          destination: input["--destination"],
-          destinationCommit: input["--destination-commit"],
-          destinationFolder: input["--destination-folder"],
-          kind: input["--kind"],
-        },
-        options,
-      );
+      const evaluated = await evaluateMove(context.programs, getParsePath(), {
+        source: input["--source"],
+        sourceCommit: input["--source-commit"],
+        sourceFolder: input["--source-folder"],
+        destination: input["--destination"],
+        destinationCommit: input["--destination-commit"],
+        destinationFolder: input["--destination-folder"],
+        kind: input["--kind"],
+      });
       if (!evaluated.ok) {
         return context.result(
           { commandIdentity, causeCode: preconditionUnmet },

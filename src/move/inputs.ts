@@ -1,10 +1,5 @@
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
-import {
-  defaultTreeOutputLimitBytes,
-  resolveCommit,
-  resolveGitDir,
-  resolveToolBinaries,
-} from "./git.ts";
+import { resolveCommit, resolveGitDir, resolveToolBinaries } from "./git.ts";
 import type { ToolBinaries } from "./git.ts";
 import { normalizeFolder, parseCommitSpec } from "./rules.ts";
 import type { MoveKind } from "./rules.ts";
@@ -19,10 +14,6 @@ export type RawMoveInput = {
   readonly kind: string | undefined;
 };
 
-export type MoveCheckOptions = {
-  readonly treeOutputLimitBytes?: number;
-};
-
 export type ResolvedInputs = {
   readonly sourceRepo: string;
   readonly destinationRepo: string;
@@ -35,7 +26,6 @@ export type ResolvedInputs = {
   readonly destAfter: string;
   readonly kind: MoveKind;
   readonly binaries: ToolBinaries;
-  readonly treeOutputLimitBytes: number;
 };
 
 async function resolveSameRepository(
@@ -74,7 +64,6 @@ export async function resolveInputs(
   programs: ProgramsCapability,
   parsePath: (raw: string) => ParsedPath,
   raw: RawMoveInput,
-  options?: MoveCheckOptions,
 ): Promise<
   | { readonly ok: true; readonly resolved: ResolvedInputs }
   | { readonly ok: false; readonly reason: string }
@@ -155,8 +144,6 @@ export async function resolveInputs(
       destAfter: destAfter.commit,
       kind: raw.kind === "copy" ? "copy" : "move",
       binaries,
-      treeOutputLimitBytes:
-        options?.treeOutputLimitBytes ?? defaultTreeOutputLimitBytes,
     },
   };
 }
