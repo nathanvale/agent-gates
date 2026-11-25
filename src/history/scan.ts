@@ -12,7 +12,7 @@ import {
 } from "../shared/causes.ts";
 import { scanDiffOutput } from "./diff.ts";
 import {
-  readOriginSlug,
+  readOriginTarget,
   readRangeAddedPaths,
   readRangeDiff,
   resolveGitBinary,
@@ -80,7 +80,7 @@ async function scanPullRequests(
   if (!ghResolved.ok) {
     return ghResolved;
   }
-  const originResolved = await readOriginSlug(programs, git, cwd);
+  const originResolved = await readOriginTarget(programs, git, cwd);
   if (!originResolved.ok) {
     return originResolved;
   }
@@ -90,7 +90,7 @@ async function scanPullRequests(
     const fetched = await fetchPullRequestText(
       programs,
       ghResolved.gh,
-      originResolved.slug,
+      originResolved.origin,
       prNumber,
     );
     if (!fetched.ok) {
@@ -196,8 +196,8 @@ async function evaluateHistoryScan(
     programs,
     gitResolved.git,
     cwd,
-    parsedRange.base,
-    parsedRange.head,
+    commitsResult.baseHash,
+    commitsResult.headHash,
   );
   if (!addedPathsResult.ok) {
     return {
@@ -212,8 +212,8 @@ async function evaluateHistoryScan(
     programs,
     gitResolved.git,
     cwd,
-    parsedRange.base,
-    parsedRange.head,
+    commitsResult.baseHash,
+    commitsResult.headHash,
   );
   if (!diffResult.ok) {
     return {
