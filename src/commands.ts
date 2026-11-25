@@ -1,4 +1,5 @@
 import { command } from "agent-cli-kernel";
+import { changelogEarlier } from "./changelog/earlier.ts";
 import { noInput, nothingChanged, unchangedSuccess } from "./shared/causes.ts";
 
 const status = command({
@@ -18,4 +19,4 @@ const status = command({
     ),
 });
 
-export const commands = [status] as const;
+export const commands = [status, changelogEarlier] as const;
