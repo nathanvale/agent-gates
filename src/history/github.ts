@@ -1,5 +1,9 @@
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
-import type { PullRequestPartKind, PullRequestTextPart } from "./rules.ts";
+import type {
+  OriginTarget,
+  PullRequestPartKind,
+  PullRequestTextPart,
+} from "./rules.ts";
 
 const defaultTimeoutMs = 30_000;
 const defaultShutdownMs = 1_000;
@@ -122,6 +126,7 @@ export function resolveGhBinary(
 async function runGhApi(
   programs: ProgramsCapability,
   gh: ParsedPath,
+  hostname: string,
   args: readonly string[],
   label: string,
   prNumber: number,
@@ -131,7 +136,7 @@ async function runGhApi(
 > {
   const result = await programs.inspect({
     executable: gh,
-    args: ["api", ...args],
+    args: ["api", "--hostname", hostname, ...args],
     timeoutMilliseconds: defaultTimeoutMs,
     outputLimitBytes: apiOutputLimitBytes,
     shutdownMilliseconds: defaultShutdownMs,
@@ -154,7 +159,7 @@ async function runGhApi(
 export async function fetchPullRequestText(
   programs: ProgramsCapability,
   gh: ParsedPath,
-  slug: string,
+  origin: OriginTarget,
   prNumber: number,
 ): Promise<
   | { readonly ok: true; readonly parts: readonly PullRequestTextPart[] }
@@ -164,7 +169,8 @@ export async function fetchPullRequestText(
   const prResponse = await runGhApi(
     programs,
     gh,
-    [`repos/${slug}/pulls/${String(prNumber)}`],
+    origin.host,
+    [`repos/${origin.slug}/pulls/${String(prNumber)}`],
     prLabel,
     prNumber,
   );
@@ -183,17 +189,17 @@ export async function fetchPullRequestText(
     readonly label: string;
   }[] = [
     {
-      endpoint: `repos/${slug}/issues/${String(prNumber)}/comments?per_page=100`,
+      endpoint: `repos/${origin.slug}/issues/${String(prNumber)}/comments?per_page=100`,
       kind: "issue-comment",
       label: `${prLabel} issue comments`,
     },
     {
-      endpoint: `repos/${slug}/pulls/${String(prNumber)}/comments?per_page=100`,
+      endpoint: `repos/${origin.slug}/pulls/${String(prNumber)}/comments?per_page=100`,
       kind: "review-comment",
       label: `${prLabel} review comments`,
     },
     {
-      endpoint: `repos/${slug}/pulls/${String(prNumber)}/reviews?per_page=100`,
+      endpoint: `repos/${origin.slug}/pulls/${String(prNumber)}/reviews?per_page=100`,
       kind: "review-body",
       label: `${prLabel} reviews`,
     },
@@ -203,6 +209,7 @@ export async function fetchPullRequestText(
     const response = await runGhApi(
       programs,
       gh,
+      origin.host,
       ["--paginate", "--slurp", collection.endpoint],
       collection.label,
       prNumber,

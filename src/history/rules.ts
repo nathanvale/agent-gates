@@ -133,18 +133,29 @@ export function parsePatternFile(
   return { ok: true, patterns };
 }
 
-export function parseOriginSlug(remoteUrl: string): string | null {
+export type OriginTarget = {
+  readonly host: string;
+  readonly slug: string;
+};
+
+export function parseOriginTarget(remoteUrl: string): OriginTarget | null {
   const trimmed = remoteUrl.trim().replace(/\/+$/, "");
   const patterns = [
-    /^https?:\/\/[^/]+\/([^/]+\/[^/]+?)(?:\.git)?$/,
-    /^ssh:\/\/[^@]+@[^/]+\/([^/]+\/[^/]+?)(?:\.git)?$/,
-    /^[^@]+@[^:]+:([^/]+\/[^/]+?)(?:\.git)?$/,
+    /^https?:\/\/(?:[^/@]+@)?([^/:]+)(?::\d+)?\/([^/]+\/[^/]+?)(?:\.git)?$/,
+    /^ssh:\/\/(?:[^/@]+@)?([^/:]+)(?::\d+)?\/([^/]+\/[^/]+?)(?:\.git)?$/,
+    /^[^@:/]+@([^:/]+):([^/]+\/[^/]+?)(?:\.git)?$/,
   ];
   for (const pattern of patterns) {
     const match = pattern.exec(trimmed);
-    const slug = match?.[1];
-    if (slug !== undefined && slug.includes("/")) {
-      return slug;
+    const host = match?.[1]?.trim().toLowerCase();
+    const slug = match?.[2];
+    if (
+      host !== undefined &&
+      host !== "" &&
+      slug !== undefined &&
+      slug.includes("/")
+    ) {
+      return { host, slug };
     }
   }
   return null;

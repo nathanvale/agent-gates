@@ -3,9 +3,9 @@ import {
   commitMarkerPrefix,
   parseAddedPaths,
   parseCommitMessages,
-  parseOriginSlug,
+  parseOriginTarget,
 } from "./rules.ts";
-import type { CommitAddedPath, CommitMeta } from "./rules.ts";
+import type { CommitAddedPath, CommitMeta, OriginTarget } from "./rules.ts";
 
 const defaultTimeoutMs = 30_000;
 const defaultShutdownMs = 1_000;
@@ -19,6 +19,8 @@ const gitLogConfigArgs: readonly string[] = [
   "color.ui=false",
   "-c",
   "log.showSignature=false",
+  "-c",
+  "log.showRoot=true",
   "-c",
   "diff.noprefix=false",
   "-c",
@@ -80,6 +82,33 @@ export async function verifyGitRepository(
   return { ok: true };
 }
 
+async function resolveCommitHash(
+  programs: ProgramsCapability,
+  git: ParsedPath,
+  cwd: string,
+  label: string,
+  rev: string,
+): Promise<
+  | { readonly ok: true; readonly hash: string }
+  | { readonly ok: false; readonly reason: string }
+> {
+  const verified = await runGit(
+    programs,
+    git,
+    cwd,
+    ["rev-parse", "--verify", `${rev}^{commit}`],
+    smallOutputLimitBytes,
+  );
+  const hash = verified.stdout.trim();
+  if (verified.exitCode !== 0 || hash === "") {
+    return {
+      ok: false,
+      reason: `Cannot resolve the ${label} commit in --range (git rev-parse exited with code ${String(verified.exitCode)}). Run \`git rev-parse --verify <ref>^{commit}\` to see the detail. The working tree is never scanned.`,
+    };
+  }
+  return { ok: true, hash };
+}
+
 export async function resolveRangeCommits(
   programs: ProgramsCapability,
   git: ParsedPath,
@@ -87,33 +116,37 @@ export async function resolveRangeCommits(
   base: string,
   head: string,
 ): Promise<
-  | { readonly ok: true; readonly commits: readonly CommitMeta[] }
+  | {
+      readonly ok: true;
+      readonly baseHash: string;
+      readonly headHash: string;
+      readonly commits: readonly CommitMeta[];
+    }
   | {
       readonly ok: false;
       readonly kind: "range-missing" | "precondition";
       readonly reason: string;
     }
 > {
-  const rangeEnds: readonly { readonly label: string; readonly rev: string }[] =
-    [
-      { label: "base", rev: base },
-      { label: "head", rev: head },
-    ];
-  for (const end of rangeEnds) {
-    const verified = await runGit(
-      programs,
-      git,
-      cwd,
-      ["rev-parse", "--verify", `${end.rev}^{commit}`],
-      smallOutputLimitBytes,
-    );
-    if (verified.exitCode !== 0) {
-      return {
-        ok: false,
-        kind: "range-missing",
-        reason: `Cannot resolve the ${end.label} commit in --range (git rev-parse exited with code ${String(verified.exitCode)}). Run \`git rev-parse --verify <ref>^{commit}\` to see the detail. The working tree is never scanned.`,
-      };
-    }
+  const resolvedBase = await resolveCommitHash(
+    programs,
+    git,
+    cwd,
+    "base",
+    base,
+  );
+  if (!resolvedBase.ok) {
+    return { ok: false, kind: "range-missing", reason: resolvedBase.reason };
+  }
+  const resolvedHead = await resolveCommitHash(
+    programs,
+    git,
+    cwd,
+    "head",
+    head,
+  );
+  if (!resolvedHead.ok) {
+    return { ok: false, kind: "range-missing", reason: resolvedHead.reason };
   }
 
   const logResult = await runGit(
@@ -123,10 +156,11 @@ export async function resolveRangeCommits(
     [
       ...gitLogConfigArgs,
       "log",
+      "--encoding=UTF-8",
       "--no-color",
       "-z",
       "--format=%H%x00%h%x00%B",
-      `${base}..${head}`,
+      `${resolvedBase.hash}..${resolvedHead.hash}`,
     ],
     messagesOutputLimitBytes,
   );
@@ -155,7 +189,12 @@ export async function resolveRangeCommits(
     };
   }
 
-  return { ok: true, commits };
+  return {
+    ok: true,
+    baseHash: resolvedBase.hash,
+    headHash: resolvedHead.hash,
+    commits,
+  };
 }
 
 export async function readRangeAddedPaths(
@@ -250,12 +289,12 @@ export async function readRangeDiff(
   return { ok: true, diff: result.stdout };
 }
 
-export async function readOriginSlug(
+export async function readOriginTarget(
   programs: ProgramsCapability,
   git: ParsedPath,
   cwd: string,
 ): Promise<
-  | { readonly ok: true; readonly slug: string }
+  | { readonly ok: true; readonly origin: OriginTarget }
   | { readonly ok: false; readonly reason: string }
 > {
   const result = await runGit(
@@ -271,13 +310,13 @@ export async function readOriginSlug(
       reason: `Cannot read origin remote for pull request scan (git remote get-url exited with code ${String(result.exitCode)}). Run \`git remote get-url origin\` to see the detail.`,
     };
   }
-  const slug = parseOriginSlug(result.stdout);
-  if (slug === null) {
+  const origin = parseOriginTarget(result.stdout);
+  if (origin === null) {
     return {
       ok: false,
       reason:
-        "Cannot parse owner/repo from the origin remote URL. Run `git remote get-url origin` to inspect it.",
+        "Cannot parse host and owner/repo from the origin remote URL. Run `git remote get-url origin` to inspect it.",
     };
   }
-  return { ok: true, slug };
+  return { ok: true, origin };
 }
