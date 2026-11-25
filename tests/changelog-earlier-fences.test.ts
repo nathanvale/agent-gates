@@ -159,7 +159,7 @@ test("refuses an unclosed fence instead of appending Earlier changes inside the 
   expect(ran.envelope).toMatchObject({
     result: {
       commandIdentity: "agent-gates.changelog-earlier",
-      causeCode: "DOMAIN_CHANGELOG_POSTCHECK_FAILED",
+      causeCode: "DOMAIN_CHANGELOG_SHAPE_UNSUPPORTED",
       outcome: "refused",
       data: null,
     },

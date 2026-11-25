@@ -1,3 +1,10 @@
+import {
+  inspectPlainChangelog,
+  isEarlierHeading,
+  parseMarkdownHeadings,
+  type TopLevelHeading,
+} from "./markdown/rules.ts";
+
 export type MergedPullRequest = {
   readonly number: number;
   readonly title: string;
@@ -18,76 +25,14 @@ export type SpliceEarlierResult =
   | { readonly ok: true; readonly changelog: string }
   | { readonly ok: false; readonly reason: string };
 
-type TopLevelHeading = {
-  readonly level: number;
-  readonly html: string;
-};
-
-type HtmlScanState = {
-  readonly headings: TopLevelHeading[];
-  depth: number;
-};
-
-const earlierHeadingText = "Earlier changes";
-const earlierHeading = `## ${earlierHeadingText}`;
-const rawHtmlTags = new Set(["pre", "script", "style", "textarea"]);
-const containerHtmlTags = new Set(["blockquote", "ul", "ol", "li"]);
-const headingTagLevels = new Map<string, number>([
-  ["h1", 1],
-  ["h2", 2],
-  ["h3", 3],
-  ["h4", 4],
-  ["h5", 5],
-  ["h6", 6],
-]);
-const htmlTagPattern = /^<(\/?)([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>])[^>]*>/;
-
-function buildUniqueHeadingMarker(
-  changelog: string,
-  lineNumber: number,
-): string {
-  const base = `agent-gates-earlier-marker-${String(lineNumber)}`;
-  let marker = base;
-  let suffix = 0;
-  while (changelog.includes(marker)) {
-    suffix += 1;
-    marker = `${base}-${String(suffix)}`;
-  }
-  return marker;
-}
-
-function isRealEarlierHeadingAt(
-  changelog: string,
-  lineStart: number,
-  lineNumber: number,
-): boolean {
-  const marker = buildUniqueHeadingMarker(changelog, lineNumber);
-  const marked = `${changelog.slice(0, lineStart)}## ${marker}${changelog.slice(lineStart + earlierHeading.length)}`;
-  return Bun.markdown.html(marked).includes(`<h2>${marker}</h2>`);
-}
-
-function findEarlierHeadingIndex(changelog: string): number {
-  let lineStart = 0;
-  let lineNumber = 1;
-
-  while (lineStart < changelog.length) {
-    const newlineIndex = changelog.indexOf("\n", lineStart);
-    const lineEnd = newlineIndex === -1 ? changelog.length : newlineIndex;
-    const rawLine = changelog.slice(lineStart, lineEnd);
-    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-
-    if (
-      line === earlierHeading &&
-      isRealEarlierHeadingAt(changelog, lineStart, lineNumber)
-    ) {
-      return lineStart;
+type ComputedChangelogResult =
+  | {
+      readonly ok: true;
+      readonly prefix: string;
+      readonly changelog: string;
+      readonly inputHeadings: readonly TopLevelHeading[];
     }
-    lineStart = newlineIndex === -1 ? changelog.length : newlineIndex + 1;
-    lineNumber += 1;
-  }
-
-  return -1;
-}
+  | { readonly ok: false; readonly reason: string };
 
 function readOwnField(record: object, key: string): unknown {
   return Object.hasOwn(record, key) ? Reflect.get(record, key) : undefined;
@@ -214,91 +159,47 @@ function computeEarlierChangelog(
   existingChangelog: string | null,
   packageName: string,
   earlier: readonly MergedPullRequest[],
-): { readonly prefix: string; readonly changelog: string } {
+): ComputedChangelogResult {
   const section = renderEarlierSection(earlier);
   if (existingChangelog === null || existingChangelog.length === 0) {
-    return { prefix: "", changelog: `# ${packageName}\n\n${section}` };
+    return {
+      ok: true,
+      prefix: "",
+      changelog: `# ${packageName}\n\n${section}`,
+      inputHeadings: [],
+    };
   }
-  const headingIndex = findEarlierHeadingIndex(existingChangelog);
-  if (headingIndex !== -1) {
-    const prefix = existingChangelog.slice(0, headingIndex);
-    return { prefix, changelog: `${prefix}${section}` };
+  const inspected = inspectPlainChangelog(existingChangelog);
+  if (!inspected.ok) {
+    return inspected;
+  }
+  if (inspected.earlierHeadingOffset !== -1) {
+    const prefix = existingChangelog.slice(0, inspected.earlierHeadingOffset);
+    return {
+      ok: true,
+      prefix,
+      changelog: `${prefix}${section}`,
+      inputHeadings: inspected.headings,
+    };
   }
   return {
+    ok: true,
     prefix: existingChangelog,
     changelog: `${existingChangelog}${separatorBeforeSection(existingChangelog)}${section}`,
+    inputHeadings: inspected.headings,
   };
-}
-
-function findRawTagEnd(lowerHtml: string, tag: string, from: number): number {
-  const closeIndex = lowerHtml.indexOf(`</${tag}>`, from);
-  return closeIndex === -1 ? lowerHtml.length : closeIndex + tag.length + 3;
-}
-
-function stepHtmlTag(
-  html: string,
-  lowerHtml: string,
-  tagStart: number,
-  state: HtmlScanState,
-): number {
-  if (html.startsWith("<!--", tagStart)) {
-    const closeIndex = html.indexOf("-->", tagStart + 4);
-    return closeIndex === -1 ? html.length : closeIndex + 3;
-  }
-  const match = htmlTagPattern.exec(html.slice(tagStart));
-  if (match === null) {
-    return tagStart + 1;
-  }
-  const isClosing = match[1] === "/";
-  const tag = (match[2] ?? "").toLowerCase();
-  const tagEnd = tagStart + match[0].length;
-  if (!isClosing && rawHtmlTags.has(tag)) {
-    return findRawTagEnd(lowerHtml, tag, tagEnd);
-  }
-  if (containerHtmlTags.has(tag)) {
-    if (isClosing) {
-      state.depth = Math.max(0, state.depth - 1);
-    } else if (!match[0].endsWith("/>")) {
-      state.depth += 1;
-    }
-    return tagEnd;
-  }
-  const level = headingTagLevels.get(tag);
-  if (!isClosing && state.depth === 0 && level !== undefined) {
-    const closeIndex = lowerHtml.indexOf(`</${tag}>`, tagEnd);
-    if (closeIndex !== -1) {
-      state.headings.push({ level, html: html.slice(tagEnd, closeIndex) });
-      return closeIndex + tag.length + 3;
-    }
-  }
-  return tagEnd;
-}
-
-function extractTopLevelHeadings(html: string): readonly TopLevelHeading[] {
-  const lowerHtml = html.toLowerCase();
-  const state: HtmlScanState = { headings: [], depth: 0 };
-  let cursor = 0;
-  while (cursor < html.length) {
-    const tagStart = html.indexOf("<", cursor);
-    if (tagStart === -1) {
-      break;
-    }
-    cursor = stepHtmlTag(html, lowerHtml, tagStart, state);
-  }
-  return state.headings;
-}
-
-function isEarlierHeading(heading: TopLevelHeading): boolean {
-  return heading.level === 2 && heading.html === earlierHeadingText;
 }
 
 function hasSingleFinalEarlierHeading(
   headings: readonly TopLevelHeading[],
 ): boolean {
-  const h2Headings = headings.filter((heading) => heading.level === 2);
-  const earlierCount = h2Headings.filter(isEarlierHeading).length;
-  const lastH2 = h2Headings.at(-1);
-  return earlierCount === 1 && lastH2 !== undefined && isEarlierHeading(lastH2);
+  const earlierCount = headings.filter(isEarlierHeading).length;
+  const lastHeading = headings.at(-1);
+  return (
+    earlierCount === 1 &&
+    lastHeading !== undefined &&
+    isEarlierHeading(lastHeading)
+  );
 }
 
 function preservesNonEarlierHeadings(
@@ -315,7 +216,7 @@ function preservesNonEarlierHeadings(
       (candidate, index) =>
         index >= searchFrom &&
         candidate.level === heading.level &&
-        candidate.html === heading.html,
+        candidate.text === heading.text,
     );
     if (foundIndex === -1) {
       return false;
@@ -331,24 +232,22 @@ function verifyEarlierChangelog(
   earlier: readonly MergedPullRequest[],
   prefix: string,
   candidate: string,
+  inputHeadings: readonly TopLevelHeading[],
 ): string | null {
   if (!candidate.startsWith(prefix)) {
     return "The built changelog does not start with the preserved prefix byte for byte.";
   }
-  const resultHeadings = extractTopLevelHeadings(Bun.markdown.html(candidate));
+  const resultHeadings = parseMarkdownHeadings(candidate).topLevelHeadings;
   if (!hasSingleFinalEarlierHeading(resultHeadings)) {
     return "The built changelog does not end with a single top-level Earlier changes heading.";
   }
   if (existingChangelog !== null && existingChangelog.length > 0) {
-    const inputHeadings = extractTopLevelHeadings(
-      Bun.markdown.html(existingChangelog),
-    );
     if (!preservesNonEarlierHeadings(inputHeadings, resultHeadings)) {
       return "The built changelog dropped or reordered an existing top-level heading.";
     }
   }
   const rerun = computeEarlierChangelog(candidate, packageName, earlier);
-  if (rerun.changelog !== candidate) {
+  if (!rerun.ok || rerun.changelog !== candidate) {
     return "Re-running changelog earlier on the built changelog did not return the same result.";
   }
   return null;
@@ -364,12 +263,16 @@ export function spliceEarlierChanges(
     packageName,
     earlier,
   );
+  if (!computed.ok) {
+    return computed;
+  }
   const failureReason = verifyEarlierChangelog(
     existingChangelog,
     packageName,
     earlier,
     computed.prefix,
     computed.changelog,
+    computed.inputHeadings,
   );
   if (failureReason !== null) {
     return { ok: false, reason: failureReason };

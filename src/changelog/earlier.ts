@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { command, station } from "agent-cli-kernel";
 import {
   causes,
-  changelogPostcheckFailed,
+  changelogShapeUnsupported,
   noInput,
   nothingChanged,
   stationWords,
@@ -182,18 +182,18 @@ export const changelogEarlier = command({
     station(causes, {
       ...stationWords,
       commandIdentity,
-      causeCode: changelogPostcheckFailed,
+      causeCode: changelogShapeUnsupported,
       trigger:
-        "The built changelog failed the post-check for a single final Earlier changes heading, preserved headings and prefix, and idempotent re-runs.",
+        "The changelog contains unsupported Markdown (raw HTML, escaped or entity-encoded headings, or an unclosed or non-final section shape) or failed the structure post-check.",
       repairAction:
-        "Repair unclosed Markdown fences, comments, or HTML blocks, normalize CR-only line endings, and remove heading marker collisions in CHANGELOG.md, then run changelog earlier again.",
+        "Write the Earlier changes section by hand, or fix CHANGELOG.md to plain Markdown without raw HTML, escaped or entity-encoded headings, unclosed blocks, or sections after Earlier changes, then run changelog earlier again.",
       guidance: {
         next: {
           kind: "instruction",
-          text: "Inspect CHANGELOG.md for unclosed blocks, CR-only line endings, or heading marker collisions, fix the Markdown structure, and run changelog earlier again.",
+          text: "Write the Earlier changes section by hand, or simplify CHANGELOG.md to plain Markdown headings without raw HTML or unclosed blocks and run changelog earlier again.",
         },
       },
-      independentObservable: "agent-gates.changelog-earlier:postcheck-failed",
+      independentObservable: "agent-gates.changelog-earlier:shape-unsupported",
     }),
   ],
   run: async (input, context) => {
@@ -285,7 +285,7 @@ export const changelogEarlier = command({
       return context.result(
         {
           commandIdentity,
-          causeCode: changelogPostcheckFailed,
+          causeCode: changelogShapeUnsupported,
         },
         {
           message: spliced.reason,

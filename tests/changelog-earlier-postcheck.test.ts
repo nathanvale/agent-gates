@@ -10,9 +10,9 @@ import { testFolder } from "./support/test-folder.ts";
 
 setDefaultTimeout(30_000);
 
-const expectedCauseCode = "DOMAIN_CHANGELOG_POSTCHECK_FAILED";
+const expectedCauseCode = "DOMAIN_CHANGELOG_SHAPE_UNSUPPORTED";
 const expectedRepairAction =
-  "Repair unclosed Markdown fences, comments, or HTML blocks, normalize CR-only line endings, and remove heading marker collisions in CHANGELOG.md, then run changelog earlier again.";
+  "Write the Earlier changes section by hand, or fix CHANGELOG.md to plain Markdown without raw HTML, escaped or entity-encoded headings, unclosed blocks, or sections after Earlier changes, then run changelog earlier again.";
 
 function runChangelogEarlierWith(existingChangelog: string) {
   const dir = testFolder("changelog-earlier-postcheck-");
@@ -147,4 +147,152 @@ test("refuses when replacing Earlier changes would drop a later top-level releas
   ].join("\n");
 
   expectPostcheckRefusal(existing);
+});
+
+test("refuses raw HTML with a fake heading inside a quoted attribute", () => {
+  const existing = [
+    "# agent-gates",
+    "## agent\\-gates\\-earlier\\-marker\\-7",
+    "",
+    '<div title="> <h2>Earlier changes</h2>">keep</div>',
+    "",
+    "```md",
+    "## Earlier changes",
+    "```",
+    "",
+    "KEEP THIS RELEASE BYTE FOR BYTE",
+    "",
+    "## Earlier changes",
+    "",
+    "- STALE",
+    "",
+  ].join("\n");
+
+  expectPostcheckRefusal(existing);
+});
+
+test("refuses raw HTML heading with an HTML entity", () => {
+  const existing = [
+    "# agent-gates",
+    "",
+    "<h2>Earlier&#32;changes</h2>",
+    "",
+    "- STALE",
+    "",
+  ].join("\n");
+
+  expectPostcheckRefusal(existing);
+});
+
+test("refuses raw HTML heading with an inline HTML comment", () => {
+  const existing = [
+    "# agent-gates",
+    "",
+    "<h2>Earlier<!-- ignored --> changes</h2>",
+    "",
+    "- STALE",
+    "",
+  ].join("\n");
+
+  expectPostcheckRefusal(existing);
+});
+
+test("refuses a Markdown heading containing an inline HTML comment", () => {
+  const existing = [
+    "# agent-gates",
+    "",
+    "## Earlier<!-- ignored --> changes",
+    "",
+    "- STALE",
+    "",
+  ].join("\n");
+
+  expectPostcheckRefusal(existing);
+});
+
+test("refuses a Markdown heading whose rendered text differs via HTML entity", () => {
+  const existing = [
+    "# agent-gates",
+    "",
+    "## Earlier&#32;changes",
+    "",
+    "- STALE",
+    "",
+  ].join("\n");
+
+  expectPostcheckRefusal(existing);
+});
+
+test("refuses raw HTML img tag whose quoted attribute contains > and a tag name", () => {
+  for (const tag of ["<pre>", "<script>", "<blockquote>"]) {
+    const existing = [
+      "# agent-gates",
+      "",
+      "## Earlier changes",
+      "",
+      `<img alt="example > ${tag}">`,
+      "",
+      "## 1.0.0",
+      "",
+      "- KEEP",
+      "",
+    ].join("\n");
+
+    expectPostcheckRefusal(existing);
+  }
+});
+
+test("refuses raw HTML release heading after a whitespace-bearing closing tag", () => {
+  const existing = [
+    "# agent-gates",
+    "",
+    "## Earlier changes",
+    "",
+    "<pre>",
+    "example",
+    "</pre >",
+    "",
+    "<h2>1.0.0</h2>",
+    "",
+    "- KEEP",
+    "",
+  ].join("\n");
+
+  expectPostcheckRefusal(existing);
+});
+
+test("refuses an escaped or entity-encoded marker heading combined with an equivalent heading and HTML comment", () => {
+  const cases = [
+    "# agent-gates\n## agent\\-gates\\-earlier\\-marker\\-7\n\n## Earlier&#32;changes\n- STALE\n<!--\n## Earlier changes\n-->\n",
+    "# agent-gates\n## agent&#45;gates&#45;earlier&#45;marker&#45;7\n\n## Earlier&#32;changes\n- STALE\n<!--\n## Earlier changes\n-->\n",
+    "# agent-gates\n## agent\\-gates\\-earlier\\-marker\\-7\n\n  ## Earlier changes\n- STALE\n<!--\n## Earlier changes\n-->\n",
+  ];
+  for (const existing of cases) {
+    expectPostcheckRefusal(existing);
+  }
+});
+
+test("accepts a plain Markdown changelog with an inline code span containing <state>", () => {
+  const existing = [
+    "# agent-gates",
+    "",
+    "## 0.1.0",
+    "",
+    "### Patch Changes",
+    "",
+    "- At the new pin, the kernel's diagnostics log lives at `<state>/my-agent-dojo/<cli>/diagnostics`, where `<state>` is `$XDG_STATE_HOME` or `~/.local/state`.",
+    "",
+  ].join("\n");
+
+  const { jsonRun } = runChangelogEarlierWith(existing);
+
+  expect(jsonRun.exitCode).toBe(0);
+  expect(jsonRun.stderr).toBe("");
+  expect(jsonRun.envelope).toMatchObject({
+    result: {
+      commandIdentity: "agent-gates.changelog-earlier",
+      causeCode: "SUCCESS_UNCHANGED",
+      outcome: "success",
+    },
+  });
 });
