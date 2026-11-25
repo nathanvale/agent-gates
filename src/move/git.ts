@@ -67,6 +67,31 @@ async function runGit(
   });
 }
 
+export async function resolveGitDir(
+  programs: ProgramsCapability,
+  git: ParsedPath,
+  repo: string,
+): Promise<
+  | { readonly ok: true; readonly gitDir: string }
+  | { readonly ok: false; readonly reason: string }
+> {
+  const result = await runGit(
+    programs,
+    git,
+    repo,
+    ["rev-parse", "--absolute-git-dir"],
+    65_536,
+  );
+  if (result.exitCode !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim();
+    return {
+      ok: false,
+      reason: `Cannot resolve git directory for ${repo}: ${detail}`,
+    };
+  }
+  return { ok: true, gitDir: result.stdout.trim() };
+}
+
 export async function resolveCommit(
   programs: ProgramsCapability,
   git: ParsedPath,

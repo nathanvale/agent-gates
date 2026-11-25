@@ -241,7 +241,7 @@ describe("move check refusals", () => {
       initRepo(source);
       initRepo(destination);
 
-      const content = "export const moved = 'exact-bytes-c147';\n";
+      const content = "export const payload = 'exact-bytes-c147';\n";
       writeFiles(source, {
         "moved/tool.ts": content,
         "archive/duplicate.ts": content,

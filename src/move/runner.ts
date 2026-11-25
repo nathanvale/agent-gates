@@ -4,15 +4,20 @@ import {
   listTree,
   readBlobText,
   resolveCommit,
+  resolveGitDir,
   resolveToolBinaries,
 } from "./git.ts";
 import type { ToolBinaries } from "./git.ts";
 import {
+  collectDestinationRecordPaths,
   collectMovedPathTargets,
+  findSourceStaleReferences,
+  isDestinationEntry,
+} from "./references.ts";
+import {
   compareTrees,
   findBrokenMarkdownLinks,
   findSourceKeptBlobs,
-  findSourceStaleReferences,
   normalizeFolder,
   orderFindings,
   parseCommitSpec,
@@ -37,6 +42,7 @@ export type RawMoveInput = {
 type ResolvedInputs = {
   readonly sourceRepo: string;
   readonly destinationRepo: string;
+  readonly sameRepository: boolean;
   readonly sourceFolder: string;
   readonly destinationFolder: string;
   readonly sourceBefore: string;
@@ -59,6 +65,25 @@ export type MoveEvaluation =
       readonly notChecked: readonly NotCheckedItem[];
     }
   | { readonly ok: false; readonly reason: string };
+
+async function resolveSameRepository(
+  programs: ProgramsCapability,
+  git: ParsedPath,
+  sourceRepo: string,
+  destinationRepo: string,
+): Promise<
+  | { readonly ok: true; readonly sameRepository: boolean }
+  | { readonly ok: false; readonly reason: string }
+> {
+  const sourceGitDir = await resolveGitDir(programs, git, sourceRepo);
+  if (!sourceGitDir.ok) return sourceGitDir;
+  const destGitDir = await resolveGitDir(programs, git, destinationRepo);
+  if (!destGitDir.ok) return destGitDir;
+  return {
+    ok: true,
+    sameRepository: sourceGitDir.gitDir === destGitDir.gitDir,
+  };
+}
 
 async function resolveOptionalCommit(
   programs: ProgramsCapability,
@@ -135,11 +160,20 @@ async function resolveInputs(
   );
   if (!destAfter.ok) return destAfter;
 
+  const sameRepo = await resolveSameRepository(
+    programs,
+    git,
+    raw.source,
+    raw.destination,
+  );
+  if (!sameRepo.ok) return sameRepo;
+
   return {
     ok: true,
     resolved: {
       sourceRepo: raw.source,
       destinationRepo: raw.destination,
+      sameRepository: sameRepo.sameRepository,
       sourceFolder: sourceFolder.folder,
       destinationFolder: destFolder.folder,
       sourceBefore: sourceBefore.commit,
@@ -177,9 +211,22 @@ async function checkSourceAfter(
     sourceAfterTree.entries,
     resolved.sourceFolder,
   );
+  const sourceRelatives = new Set(
+    sourceEntries.map((entry) => entry.relativePath),
+  );
+  const checkedEntries = resolved.sameRepository
+    ? sourceAfterTree.entries.filter(
+        (entry) =>
+          !isDestinationEntry(
+            entry.repoPath,
+            resolved.destinationFolder,
+            sourceRelatives,
+          ),
+      )
+    : sourceAfterTree.entries;
   const textFiles: { readonly repoPath: string; readonly text: string }[] = [];
   if (targets.length > 0) {
-    for (const entry of sourceAfterTree.entries) {
+    for (const entry of checkedEntries) {
       const text = await readBlobText(
         programs,
         resolved.binaries.git,
@@ -191,11 +238,16 @@ async function checkSourceAfter(
       }
     }
   }
+  const destinationRecordPaths = collectDestinationRecordPaths(
+    sourceEntries,
+    resolved.sourceFolder,
+    resolved.destinationFolder,
+  );
   return {
     ok: true,
     findings: [
-      ...findSourceStaleReferences(textFiles, targets),
-      ...findSourceKeptBlobs(sourceEntries, sourceAfterTree.entries),
+      ...findSourceStaleReferences(textFiles, targets, destinationRecordPaths),
+      ...findSourceKeptBlobs(sourceEntries, checkedEntries),
     ],
   };
 }
