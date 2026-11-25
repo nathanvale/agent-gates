@@ -164,3 +164,112 @@ test("treats an unclosed fence as running to the end and appends Earlier changes
     },
   });
 });
+
+function countEarlierHeadings(markdown: string): number {
+  return markdown.split(/\r?\n/).filter((line) => line === "## Earlier changes")
+    .length;
+}
+
+function assertReplacesSectionOnceAndRepeatsIdentically(
+  above: string,
+  staleSection: string,
+): void {
+  const expected = `${above}${renderedEarlierSection}`;
+  const first = runChangelogEarlier(`${above}${staleSection}`);
+
+  expect(first.exitCode).toBe(0);
+  expect(first.stderr).toBe("");
+  expect(first.envelope).toMatchObject({
+    result: {
+      commandIdentity: "agent-gates.changelog-earlier",
+      causeCode: "SUCCESS_UNCHANGED",
+      data: { changelog: expected },
+    },
+  });
+  expect(countEarlierHeadings(expected)).toBe(1);
+
+  const second = runChangelogEarlier(expected);
+
+  expect(second.exitCode).toBe(0);
+  expect(second.stderr).toBe("");
+  expect(second.envelope).toMatchObject({
+    result: {
+      commandIdentity: "agent-gates.changelog-earlier",
+      causeCode: "SUCCESS_UNCHANGED",
+      data: { changelog: expected },
+    },
+  });
+}
+
+test("replaces Earlier changes after a list-contained fence whose closing marker is indented within the list item", () => {
+  const above = [
+    "# my-pkg",
+    "",
+    "- Example",
+    "",
+    "  ```md",
+    "  code",
+    "    ```",
+    "",
+    "",
+  ].join("\n");
+
+  assertReplacesSectionOnceAndRepeatsIdentically(
+    above,
+    "## Earlier changes\n\n- STALE\n",
+  );
+});
+
+test("replaces Earlier changes after an inline fenced code block on a list item line", () => {
+  const above = [
+    "# my-pkg",
+    "",
+    "## 0.1.0",
+    "",
+    "- ```sh",
+    "  echo example",
+    "  ```",
+    "",
+    "",
+  ].join("\n");
+
+  assertReplacesSectionOnceAndRepeatsIdentically(
+    above,
+    "## Earlier changes\n\n- stale\n",
+  );
+});
+
+test("replaces Earlier changes after an unclosed list-contained fence that ends at the dedented heading", () => {
+  const above = [
+    "# my-pkg",
+    "",
+    "- Example",
+    "",
+    "  ```sh",
+    "  echo example",
+    "",
+    "",
+  ].join("\n");
+
+  assertReplacesSectionOnceAndRepeatsIdentically(
+    above,
+    "## Earlier changes\n\n- stale\n",
+  );
+});
+
+test("replaces Earlier changes after a tilde fence inside a list item", () => {
+  const above = [
+    "# my-pkg",
+    "",
+    "- ~~~sh",
+    "  echo example",
+    "  ~~~",
+    "",
+    "",
+  ].join("\n");
+
+  assertReplacesSectionOnceAndRepeatsIdentically(
+    above,
+    "## Earlier changes\n\n- stale\n",
+  );
+});

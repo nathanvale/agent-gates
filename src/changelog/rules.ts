@@ -14,49 +14,35 @@ export type SelectEarlierResult =
   | { readonly ok: true; readonly earlier: readonly MergedPullRequest[] }
   | { readonly ok: false; readonly code: "adopting-missing" | "no-earlier" };
 
-type FenceState = {
-  readonly marker: "`" | "~";
-  readonly length: number;
-};
-
 const earlierHeading = "## Earlier changes";
-const backtickFenceOpen = /^ {0,3}(`{3,})[^`]*$/;
-const tildeFenceOpen = /^ {0,3}(~{3,}).*$/;
-const fenceClose = /^ {0,3}(`+|~+)[ \t]*$/;
 
-function parseOpeningFence(line: string): FenceState | null {
-  const backticks = backtickFenceOpen.exec(line)?.[1];
-  if (backticks !== undefined) {
-    return { marker: "`", length: backticks.length };
+function buildUniqueHeadingMarker(
+  changelog: string,
+  lineNumber: number,
+): string {
+  const base = `agent-gates-earlier-marker-${String(lineNumber)}`;
+  let marker = base;
+  let suffix = 0;
+  while (changelog.includes(marker)) {
+    suffix += 1;
+    marker = `${base}-${String(suffix)}`;
   }
-  const tildes = tildeFenceOpen.exec(line)?.[1];
-  if (tildes !== undefined) {
-    return { marker: "~", length: tildes.length };
-  }
-  return null;
+  return marker;
 }
 
-function isClosingFence(line: string, fence: FenceState): boolean {
-  const run = fenceClose.exec(line)?.[1];
-  if (run === undefined) {
-    return false;
-  }
-  return run.startsWith(fence.marker) && run.length >= fence.length;
-}
-
-function advanceFenceState(
-  line: string,
-  openFence: FenceState | null,
-): FenceState | null {
-  if (openFence !== null) {
-    return isClosingFence(line, openFence) ? null : openFence;
-  }
-  return parseOpeningFence(line);
+function isRealEarlierHeadingAt(
+  changelog: string,
+  lineStart: number,
+  lineNumber: number,
+): boolean {
+  const marker = buildUniqueHeadingMarker(changelog, lineNumber);
+  const marked = `${changelog.slice(0, lineStart)}## ${marker}${changelog.slice(lineStart + earlierHeading.length)}`;
+  return Bun.markdown.html(marked).includes(`<h2>${marker}</h2>`);
 }
 
 function findEarlierHeadingIndex(changelog: string): number {
-  let openFence: FenceState | null = null;
   let lineStart = 0;
+  let lineNumber = 1;
 
   while (lineStart < changelog.length) {
     const newlineIndex = changelog.indexOf("\n", lineStart);
@@ -64,11 +50,14 @@ function findEarlierHeadingIndex(changelog: string): number {
     const rawLine = changelog.slice(lineStart, lineEnd);
     const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
 
-    if (openFence === null && line === earlierHeading) {
+    if (
+      line === earlierHeading &&
+      isRealEarlierHeadingAt(changelog, lineStart, lineNumber)
+    ) {
       return lineStart;
     }
-    openFence = advanceFenceState(line, openFence);
     lineStart = newlineIndex === -1 ? changelog.length : newlineIndex + 1;
+    lineNumber += 1;
   }
 
   return -1;
