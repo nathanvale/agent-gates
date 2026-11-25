@@ -5,17 +5,17 @@ import {
   invokeChangelogCli,
   invokeChangelogCliJson,
   samplePullRequests,
-} from "./support/changelog-earlier.ts";
+} from "./support/changelog-backfill.ts";
 import { testFolder } from "./support/test-folder.ts";
 
 setDefaultTimeout(30_000);
 
 const expectedCauseCode = "DOMAIN_CHANGELOG_SHAPE_UNSUPPORTED";
 const expectedRepairAction =
-  "Write the Earlier changes section by hand, or fix CHANGELOG.md to plain Markdown without raw HTML, escaped or entity-encoded headings, unclosed blocks, or sections after Earlier changes, then run changelog earlier again.";
+  "Write the Earlier changes section by hand, or fix CHANGELOG.md to plain Markdown without raw HTML, escaped or entity-encoded headings, unclosed blocks, or sections after Earlier changes, then run changelog backfill again.";
 
-function runChangelogEarlierWith(existingChangelog: string) {
-  const dir = testFolder("changelog-earlier-postcheck-");
+function runChangelogBackfillWith(existingChangelog: string) {
+  const dir = testFolder("changelog-backfill-postcheck-");
   try {
     const prsPath = join(dir, "prs.json");
     const changelogPath = join(dir, "CHANGELOG.md");
@@ -23,7 +23,7 @@ function runChangelogEarlierWith(existingChangelog: string) {
     writeFileSync(changelogPath, existingChangelog);
     const jsonRun = invokeChangelogCliJson(
       "changelog",
-      "earlier",
+      "backfill",
       "--pull-requests",
       prsPath,
       "--changelog",
@@ -35,7 +35,7 @@ function runChangelogEarlierWith(existingChangelog: string) {
     );
     const plainRun = invokeChangelogCli(
       "changelog",
-      "earlier",
+      "backfill",
       "--pull-requests",
       prsPath,
       "--changelog",
@@ -52,13 +52,13 @@ function runChangelogEarlierWith(existingChangelog: string) {
 }
 
 function expectPostcheckRefusal(existingChangelog: string): void {
-  const { jsonRun, plainRun } = runChangelogEarlierWith(existingChangelog);
+  const { jsonRun, plainRun } = runChangelogBackfillWith(existingChangelog);
 
   expect(jsonRun.exitCode).toBe(3);
   expect(jsonRun.stderr).toBe("");
   expect(jsonRun.envelope).toMatchObject({
     result: {
-      commandIdentity: "agent-gates.changelog-earlier",
+      commandIdentity: "agent-gates.changelog-backfill",
       causeCode: expectedCauseCode,
       outcome: "refused",
       data: null,
@@ -284,13 +284,13 @@ test("accepts a plain Markdown changelog with an inline code span containing <st
     "",
   ].join("\n");
 
-  const { jsonRun } = runChangelogEarlierWith(existing);
+  const { jsonRun } = runChangelogBackfillWith(existing);
 
   expect(jsonRun.exitCode).toBe(0);
   expect(jsonRun.stderr).toBe("");
   expect(jsonRun.envelope).toMatchObject({
     result: {
-      commandIdentity: "agent-gates.changelog-earlier",
+      commandIdentity: "agent-gates.changelog-backfill",
       causeCode: "SUCCESS_UNCHANGED",
       outcome: "success",
     },
