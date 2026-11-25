@@ -136,7 +136,7 @@ test("ignores Earlier changes inside a four-backtick fence containing a three-ba
   });
 });
 
-test("treats an unclosed fence as running to the end and appends Earlier changes last", () => {
+test("refuses an unclosed fence instead of appending Earlier changes inside the open block", () => {
   const existing = [
     "# my-pkg",
     "",
@@ -154,13 +154,14 @@ test("treats an unclosed fence as running to the end and appends Earlier changes
 
   const ran = runChangelogEarlier(existing);
 
-  expect(ran.exitCode).toBe(0);
+  expect(ran.exitCode).toBe(3);
   expect(ran.stderr).toBe("");
   expect(ran.envelope).toMatchObject({
     result: {
       commandIdentity: "agent-gates.changelog-earlier",
-      causeCode: "SUCCESS_UNCHANGED",
-      data: { changelog: `${existing}${renderedEarlierSection}` },
+      causeCode: "DOMAIN_CHANGELOG_SHAPE_UNSUPPORTED",
+      outcome: "refused",
+      data: null,
     },
   });
 });

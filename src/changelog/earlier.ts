@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { command, station } from "agent-cli-kernel";
 import {
   causes,
+  changelogShapeUnsupported,
   noInput,
   nothingChanged,
   stationWords,
@@ -178,6 +179,22 @@ export const changelogEarlier = command({
       independentObservable:
         "agent-gates.changelog-earlier:changelog-unreadable",
     }),
+    station(causes, {
+      ...stationWords,
+      commandIdentity,
+      causeCode: changelogShapeUnsupported,
+      trigger:
+        "The changelog contains unsupported Markdown (raw HTML, escaped or entity-encoded headings, or an unclosed or non-final section shape) or failed the structure post-check.",
+      repairAction:
+        "Write the Earlier changes section by hand, or fix CHANGELOG.md to plain Markdown without raw HTML, escaped or entity-encoded headings, unclosed blocks, or sections after Earlier changes, then run changelog earlier again.",
+      guidance: {
+        next: {
+          kind: "instruction",
+          text: "Write the Earlier changes section by hand, or simplify CHANGELOG.md to plain Markdown headings without raw HTML or unclosed blocks and run changelog earlier again.",
+        },
+      },
+      independentObservable: "agent-gates.changelog-earlier:shape-unsupported",
+    }),
   ],
   run: async (input, context) => {
     const rawPullRequests = await readTextFile(input["--pull-requests"]);
@@ -259,17 +276,30 @@ export const changelogEarlier = command({
       );
     }
 
-    const changelog = spliceEarlierChanges(
+    const spliced = spliceEarlierChanges(
       existingChangelog,
       input["--package"],
       selected.earlier,
     );
+    if (!spliced.ok) {
+      return context.result(
+        {
+          commandIdentity,
+          causeCode: changelogShapeUnsupported,
+        },
+        {
+          message: spliced.reason,
+          data: null,
+          effects: nothingChanged,
+        },
+      );
+    }
 
     return context.result(
       { commandIdentity, causeCode: unchangedSuccess },
       {
         message: `Built Earlier changes section with ${String(selected.earlier.length)} pull requests.`,
-        data: { changelog },
+        data: { changelog: spliced.changelog },
         effects: nothingChanged,
       },
     );
