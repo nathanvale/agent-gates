@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { strippedGitEnvVars } from "../../src/move/git.ts";
 
 const cli = join(import.meta.dir, "../../src/cli.ts");
 
@@ -13,13 +14,21 @@ function resolveGit(): string {
 
 const gitBinary = resolveGit();
 
+function cleanGitEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  for (const key of strippedGitEnvVars) {
+    delete env[key];
+  }
+  return env;
+}
+
 export function runGit(repo: string, args: readonly string[]): string {
   const child = Bun.spawnSync([gitBinary, "-C", repo, ...args], {
     stdout: "pipe",
     stderr: "pipe",
     timeout: 20_000,
     env: {
-      ...process.env,
+      ...cleanGitEnv(),
       GIT_AUTHOR_NAME: "Test Author",
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "Test Author",

@@ -7,10 +7,13 @@ export type MoveCause =
 
 export type MoveKind = "move" | "copy";
 
+export const symlinkMode = "120000";
+
 export type TreeEntry = {
   readonly repoPath: string;
   readonly relativePath: string;
   readonly hash: string;
+  readonly mode: string;
 };
 
 export type MoveFinding = {
@@ -30,14 +33,6 @@ export type NotCheckedItem = {
   readonly enableWith?: string;
 };
 
-export type ResolvedTestScript =
-  | { readonly kind: "bun-test"; readonly args: readonly string[] }
-  | {
-      readonly kind: "unsupported";
-      readonly script: string;
-      readonly reason: string;
-    };
-
 export type CommitRangeSpec = {
   readonly first: string;
   readonly second: string | null;
@@ -56,8 +51,16 @@ const emptyBlobHashes = new Set([
   "473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813",
 ]);
 
+const markdownExtensions = [".md", ".markdown", ".mdown", ".mkd"];
+const maxSymlinkHops = 16;
+
 function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+export function isMarkdownPath(repoPath: string): boolean {
+  const lower = repoPath.toLowerCase();
+  return markdownExtensions.some((extension) => lower.endsWith(extension));
 }
 
 export function parseCommitSpec(
@@ -129,16 +132,22 @@ export function parseTreeOutput(
     const tabIndex = record.indexOf("\t");
     if (tabIndex === -1) continue;
     const headerParts = record.slice(0, tabIndex).split(" ");
+    const mode = headerParts[0];
     const objectType = headerParts[1];
     const hash = headerParts[2];
     const repoPath = record.slice(tabIndex + 1);
-    if (objectType !== "blob" || hash === undefined || repoPath.length === 0) {
+    if (
+      mode === undefined ||
+      objectType !== "blob" ||
+      hash === undefined ||
+      repoPath.length === 0
+    ) {
       continue;
     }
     if (prefix !== "" && !repoPath.startsWith(prefix)) continue;
     const relativePath =
       prefix === "" ? repoPath : repoPath.slice(prefix.length);
-    entries.push({ repoPath, relativePath, hash });
+    entries.push({ repoPath, relativePath, hash, mode });
   }
   entries.sort((left, right) =>
     compareCodeUnits(left.relativePath, right.relativePath),
@@ -242,31 +251,103 @@ function resolveMarkdownLink(
   return normalizePosixSegments(combined);
 }
 
+function resolveSymlinkStep(
+  currentPath: string,
+  symlinks: ReadonlyMap<string, string>,
+):
+  | { readonly kind: "unchanged" }
+  | { readonly kind: "invalid" }
+  | { readonly kind: "next"; readonly path: string } {
+  const parts = currentPath.split("/");
+  for (let index = 1; index <= parts.length; index += 1) {
+    const prefix = parts.slice(0, index).join("/");
+    const rawTarget = symlinks.get(prefix);
+    if (rawTarget === undefined) continue;
+    if (rawTarget.length === 0 || rawTarget.startsWith("/")) {
+      return { kind: "invalid" };
+    }
+    const baseSegments = parts.slice(0, index - 1);
+    const restSegments = parts.slice(index);
+    const normalized = normalizePosixSegments([
+      ...baseSegments,
+      ...rawTarget.split("/"),
+      ...restSegments,
+    ]);
+    if (normalized === null) {
+      return { kind: "invalid" };
+    }
+    return { kind: "next", path: normalized };
+  }
+  return { kind: "unchanged" };
+}
+
+function resolveThroughSymlinks(
+  targetPath: string,
+  symlinks: ReadonlyMap<string, string>,
+): string | null {
+  if (symlinks.size === 0) return targetPath;
+  let current = targetPath;
+  const seen = new Set<string>([current]);
+  for (let hop = 0; hop < maxSymlinkHops; hop += 1) {
+    const step = resolveSymlinkStep(current, symlinks);
+    if (step.kind === "unchanged") return current;
+    if (step.kind === "invalid") return null;
+    if (seen.has(step.path)) return null;
+    seen.add(step.path);
+    current = step.path;
+  }
+  return null;
+}
+
+function buildDestinationIndex(destinationEntries: readonly TreeEntry[]): {
+  readonly pathSet: ReadonlySet<string>;
+  readonly dirSet: ReadonlySet<string>;
+} {
+  const pathSet = new Set<string>();
+  const dirSet = new Set<string>();
+  for (const entry of destinationEntries) {
+    if (entry.mode !== symlinkMode) {
+      pathSet.add(entry.repoPath);
+    }
+    const parts = entry.repoPath.split("/");
+    for (let index = 1; index < parts.length; index += 1) {
+      dirSet.add(parts.slice(0, index).join("/"));
+    }
+  }
+  return { pathSet, dirSet };
+}
+
+function isLinkTargetResolved(
+  fromRepoPath: string,
+  rawTarget: string,
+  index: {
+    readonly pathSet: ReadonlySet<string>;
+    readonly dirSet: ReadonlySet<string>;
+  },
+  symlinks: ReadonlyMap<string, string>,
+): boolean {
+  const resolved = resolveMarkdownLink(fromRepoPath, rawTarget);
+  if (resolved === "") return true;
+  if (resolved === null) return false;
+  const finalTarget = resolveThroughSymlinks(resolved, symlinks);
+  if (finalTarget === null) return false;
+  if (finalTarget === "") return true;
+  return index.pathSet.has(finalTarget) || index.dirSet.has(finalTarget);
+}
+
 export function findBrokenMarkdownLinks(
   movedMarkdownFiles: readonly {
     readonly repoPath: string;
     readonly text: string;
   }[],
-  destinationPaths: readonly string[],
+  destinationEntries: readonly TreeEntry[],
+  symlinks: ReadonlyMap<string, string> = new Map(),
 ): readonly MoveFinding[] {
-  const pathSet = new Set(destinationPaths);
-  const dirSet = new Set<string>();
-  for (const filePath of destinationPaths) {
-    const parts = filePath.split("/");
-    for (let index = 1; index < parts.length; index += 1) {
-      dirSet.add(parts.slice(0, index).join("/"));
-    }
-  }
+  const index = buildDestinationIndex(destinationEntries);
   const findings: MoveFinding[] = [];
   for (const file of movedMarkdownFiles) {
-    const links = extractRelativeMarkdownLinks(file.text);
-    for (const rawTarget of links) {
-      const resolved = resolveMarkdownLink(file.repoPath, rawTarget);
-      if (resolved === "") continue;
-      if (
-        resolved === null ||
-        (!pathSet.has(resolved) && !dirSet.has(resolved))
-      ) {
+    for (const rawTarget of extractRelativeMarkdownLinks(file.text)) {
+      if (!isLinkTargetResolved(file.repoPath, rawTarget, index, symlinks)) {
         findings.push({
           cause: "DOMAIN_MOVE_REFERENCE_DANGLING",
           path: file.repoPath,
@@ -306,154 +387,6 @@ export function findSourceKeptBlobs(
     }
   }
   return findings;
-}
-
-function splitCommandTokens(command: string): readonly string[] {
-  const tokens: string[] = [];
-  for (const match of command.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) {
-    const value = match[1] ?? match[2] ?? match[3];
-    if (value !== undefined) tokens.push(value);
-  }
-  return tokens;
-}
-
-function readPackageScripts(
-  packageJsonText: string | null,
-): ReadonlyMap<string, string> | null {
-  if (packageJsonText === null) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(packageJsonText);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null) return null;
-  const scripts: unknown = Reflect.get(parsed, "scripts");
-  if (typeof scripts !== "object" || scripts === null) return null;
-  const map = new Map<string, string>();
-  for (const [key, value] of Object.entries(scripts)) {
-    if (typeof value === "string") {
-      map.set(key, value.trim());
-    }
-  }
-  return map;
-}
-
-function filterBunTestTokens(tokens: readonly string[]): readonly string[] {
-  const args: string[] = [];
-  let skipNext = false;
-  for (const token of tokens) {
-    if (skipNext) {
-      skipNext = false;
-      continue;
-    }
-    if (token === "&&" || token === "||" || token === ";") break;
-    if (token === "-t" || token === "--test-name-pattern") {
-      skipNext = true;
-      continue;
-    }
-    if (!token.startsWith("--test-name-pattern=")) args.push(token);
-  }
-  return args;
-}
-
-function stripLeadingDoubleDash(tokens: readonly string[]): readonly string[] {
-  return tokens[0] === "--" ? tokens.slice(1) : tokens;
-}
-
-function extractAliasTarget(
-  tokens: readonly string[],
-  scripts: ReadonlyMap<string, string>,
-): { readonly name: string; readonly trailing: readonly string[] } | null {
-  const first = tokens[0];
-  const second = tokens[1];
-  const third = tokens[2];
-  if ((first === "bun" || first === "npm") && second === "run") {
-    if (third === undefined) return null;
-    return { name: third, trailing: stripLeadingDoubleDash(tokens.slice(3)) };
-  }
-  if (first === "bun" && second !== undefined && scripts.has(second)) {
-    return { name: second, trailing: stripLeadingDoubleDash(tokens.slice(2)) };
-  }
-  return null;
-}
-
-export function resolveBunTestScript(
-  packageJsonText: string | null,
-): ResolvedTestScript {
-  const scripts = readPackageScripts(packageJsonText);
-  const initial = scripts?.get("test");
-  if (scripts === null || initial === undefined || initial.length === 0) {
-    return { kind: "bun-test", args: [] };
-  }
-  const visited = new Set<string>(["test"]);
-  let current = initial;
-  const trailingChunks: (readonly string[])[] = [];
-  for (;;) {
-    const tokens = splitCommandTokens(current);
-    if (tokens[0] === "bun" && tokens[1] === "test") {
-      return {
-        kind: "bun-test",
-        args: filterBunTestTokens([
-          ...tokens.slice(2),
-          ...trailingChunks.reverse().flat(),
-        ]),
-      };
-    }
-    const alias = extractAliasTarget(tokens, scripts);
-    if (alias === null) {
-      return {
-        kind: "unsupported",
-        script: current,
-        reason: `Test script "${current}" does not resolve to bun test.`,
-      };
-    }
-    if (visited.has(alias.name)) {
-      return {
-        kind: "unsupported",
-        script: current,
-        reason: `Test script "${current}" forms an alias loop on "${alias.name}".`,
-      };
-    }
-    const next = scripts.get(alias.name);
-    if (next === undefined || next.length === 0) {
-      return {
-        kind: "unsupported",
-        script: current,
-        reason: `Test script "${current}" references missing script "${alias.name}".`,
-      };
-    }
-    visited.add(alias.name);
-    trailingChunks.push(alias.trailing);
-    current = next;
-  }
-}
-
-export function parseBunTestDiscovery(
-  output: string,
-):
-  | { readonly ok: true; readonly count: number }
-  | { readonly ok: false; readonly reason: string } {
-  const searched =
-    /Searched\s+(\d+)\s+files?\s+\(skipping\s+\d+\s+tests?\)/.exec(output);
-  if (searched?.[1] !== undefined) {
-    return { ok: true, count: Number(searched[1]) };
-  }
-  if (/error:\s+0\s+test\s+files\s+matching/.test(output)) {
-    return { ok: true, count: 0 };
-  }
-  const lines = output
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  const summary = lines.slice(0, 6).join(" | ");
-  return {
-    ok: false,
-    reason:
-      summary.length > 0
-        ? `Test runner failed to load: ${summary}`
-        : "Test runner failed to load with no output.",
-  };
 }
 
 export function orderFindings(
