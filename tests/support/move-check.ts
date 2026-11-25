@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { strippedGitEnvVars } from "../../src/move/git.ts";
 
 const cli = join(import.meta.dir, "../../src/cli.ts");
 
@@ -13,13 +14,26 @@ function resolveGit(): string {
 
 const gitBinary = resolveGit();
 
-export function runGit(repo: string, args: readonly string[]): string {
+export function cleanGitEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  for (const key of strippedGitEnvVars) {
+    delete env[key];
+  }
+  return env;
+}
+
+export function runGit(
+  repo: string,
+  args: readonly string[],
+  input?: string,
+): string {
   const child = Bun.spawnSync([gitBinary, "-C", repo, ...args], {
     stdout: "pipe",
     stderr: "pipe",
     timeout: 20_000,
+    ...(input === undefined ? {} : { stdin: Buffer.from(input, "utf8") }),
     env: {
-      ...process.env,
+      ...cleanGitEnv(),
       GIT_AUTHOR_NAME: "Test Author",
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "Test Author",
@@ -70,13 +84,17 @@ export function repoSnapshot(repo: string) {
   };
 }
 
-function invokeMoveCheck(...argv: string[]) {
+function invokeMoveCheck(
+  argv: readonly string[],
+  env?: Readonly<Record<string, string | undefined>>,
+) {
   const child = Bun.spawnSync(
     [process.execPath, "run", cli, "move", "check", ...argv],
     {
       stdout: "pipe",
       stderr: "pipe",
       timeout: 20_000,
+      ...(env === undefined ? {} : { env }),
     },
   );
   return {
@@ -86,8 +104,15 @@ function invokeMoveCheck(...argv: string[]) {
   };
 }
 
-export function invokeMoveCheckJson(...argv: string[]) {
-  const ran = invokeMoveCheck(...argv, "--json");
+export function invokeMoveCheckJsonWithEnv(
+  env: Readonly<Record<string, string | undefined>> | undefined,
+  ...argv: string[]
+) {
+  const ran = invokeMoveCheck([...argv, "--json"], env);
   const parsed: unknown = JSON.parse(ran.stdout);
   return { exitCode: ran.exitCode, stderr: ran.stderr, envelope: parsed };
+}
+
+export function invokeMoveCheckJson(...argv: string[]) {
+  return invokeMoveCheckJsonWithEnv(undefined, ...argv);
 }

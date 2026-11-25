@@ -1,13 +1,7 @@
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
-import {
-  discoverTestFileCount,
-  listTree,
-  readBlobText,
-  resolveCommit,
-  resolveGitDir,
-  resolveToolBinaries,
-} from "./git.ts";
-import type { ToolBinaries } from "./git.ts";
+import { discoverTestFileCount, listTree, readBlobText } from "./git.ts";
+import { resolveInputs } from "./inputs.ts";
+import type { RawMoveInput, ResolvedInputs } from "./inputs.ts";
 import {
   collectDestinationRecordPaths,
   collectMovedPathTargets,
@@ -18,9 +12,9 @@ import {
   compareTrees,
   findBrokenMarkdownLinks,
   findSourceKeptBlobs,
-  normalizeFolder,
+  isMarkdownPath,
   orderFindings,
-  parseCommitSpec,
+  symlinkMode,
 } from "./rules.ts";
 import type {
   MoveFinding,
@@ -28,30 +22,6 @@ import type {
   NotCheckedItem,
   TreeEntry,
 } from "./rules.ts";
-
-export type RawMoveInput = {
-  readonly source: string;
-  readonly sourceCommit: string;
-  readonly sourceFolder: string | undefined;
-  readonly destination: string;
-  readonly destinationCommit: string;
-  readonly destinationFolder: string | undefined;
-  readonly kind: string | undefined;
-};
-
-type ResolvedInputs = {
-  readonly sourceRepo: string;
-  readonly destinationRepo: string;
-  readonly sameRepository: boolean;
-  readonly sourceFolder: string;
-  readonly destinationFolder: string;
-  readonly sourceBefore: string;
-  readonly sourceAfter: string | null;
-  readonly destBefore: string | null;
-  readonly destAfter: string;
-  readonly kind: MoveKind;
-  readonly binaries: ToolBinaries;
-};
 
 export type MoveEvaluation =
   | {
@@ -66,124 +36,14 @@ export type MoveEvaluation =
     }
   | { readonly ok: false; readonly reason: string };
 
-async function resolveSameRepository(
-  programs: ProgramsCapability,
-  git: ParsedPath,
-  sourceRepo: string,
-  destinationRepo: string,
-): Promise<
-  | { readonly ok: true; readonly sameRepository: boolean }
-  | { readonly ok: false; readonly reason: string }
-> {
-  const sourceGitDir = await resolveGitDir(programs, git, sourceRepo);
-  if (!sourceGitDir.ok) return sourceGitDir;
-  const destGitDir = await resolveGitDir(programs, git, destinationRepo);
-  if (!destGitDir.ok) return destGitDir;
-  return {
-    ok: true,
-    sameRepository: sourceGitDir.gitDir === destGitDir.gitDir,
-  };
-}
-
-async function resolveOptionalCommit(
-  programs: ProgramsCapability,
-  git: ParsedPath,
+function emptyFolderReason(
+  optionName: string,
+  folder: string,
+  commit: string,
   repo: string,
-  rev: string | null,
-): Promise<
-  | { readonly ok: true; readonly commit: string | null }
-  | { readonly ok: false; readonly reason: string }
-> {
-  if (rev === null) return { ok: true, commit: null };
-  return resolveCommit(programs, git, repo, rev);
-}
-
-async function resolveInputs(
-  programs: ProgramsCapability,
-  parsePath: (raw: string) => ParsedPath,
-  raw: RawMoveInput,
-): Promise<
-  | { readonly ok: true; readonly resolved: ResolvedInputs }
-  | { readonly ok: false; readonly reason: string }
-> {
-  const binariesResult = resolveToolBinaries(parsePath);
-  if (!binariesResult.ok) return binariesResult;
-
-  const sourceFolder = normalizeFolder(raw.sourceFolder, "--source-folder");
-  if (!sourceFolder.ok) return sourceFolder;
-
-  const destFolder = normalizeFolder(
-    raw.destinationFolder,
-    "--destination-folder",
-  );
-  if (!destFolder.ok) return destFolder;
-
-  const sourceSpec = parseCommitSpec(raw.sourceCommit, "--source-commit");
-  if (!sourceSpec.ok) return sourceSpec;
-
-  const destSpec = parseCommitSpec(
-    raw.destinationCommit,
-    "--destination-commit",
-  );
-  if (!destSpec.ok) return destSpec;
-
-  const git = binariesResult.binaries.git;
-  const sourceBefore = await resolveCommit(
-    programs,
-    git,
-    raw.source,
-    sourceSpec.spec.first,
-  );
-  if (!sourceBefore.ok) return sourceBefore;
-
-  const sourceAfter = await resolveOptionalCommit(
-    programs,
-    git,
-    raw.source,
-    sourceSpec.spec.second,
-  );
-  if (!sourceAfter.ok) return sourceAfter;
-
-  const destBefore = await resolveOptionalCommit(
-    programs,
-    git,
-    raw.destination,
-    destSpec.spec.second === null ? null : destSpec.spec.first,
-  );
-  if (!destBefore.ok) return destBefore;
-
-  const destAfter = await resolveCommit(
-    programs,
-    git,
-    raw.destination,
-    destSpec.spec.second ?? destSpec.spec.first,
-  );
-  if (!destAfter.ok) return destAfter;
-
-  const sameRepo = await resolveSameRepository(
-    programs,
-    git,
-    raw.source,
-    raw.destination,
-  );
-  if (!sameRepo.ok) return sameRepo;
-
-  return {
-    ok: true,
-    resolved: {
-      sourceRepo: raw.source,
-      destinationRepo: raw.destination,
-      sameRepository: sameRepo.sameRepository,
-      sourceFolder: sourceFolder.folder,
-      destinationFolder: destFolder.folder,
-      sourceBefore: sourceBefore.commit,
-      sourceAfter: sourceAfter.commit,
-      destBefore: destBefore.commit,
-      destAfter: destAfter.commit,
-      kind: raw.kind === "copy" ? "copy" : "move",
-      binaries: binariesResult.binaries,
-    },
-  };
+): string {
+  const folderDetail = folder === "" ? "repository root" : `"${folder}"`;
+  return `No tracked files found for ${optionName} (${folderDetail}) at ${commit} in ${repo}.`;
 }
 
 async function checkSourceAfter(
@@ -203,7 +63,7 @@ async function checkSourceAfter(
   }
   const sourceAfterTree = await listTree(
     programs,
-    resolved.binaries.git,
+    resolved.binaries,
     resolved.sourceRepo,
     resolved.sourceAfter,
     "",
@@ -234,7 +94,7 @@ async function checkSourceAfter(
     for (const entry of checkedEntries) {
       const blob = await readBlobText(
         programs,
-        resolved.binaries.git,
+        resolved.binaries,
         resolved.sourceRepo,
         entry.hash,
       );
@@ -263,6 +123,36 @@ async function checkSourceAfter(
   };
 }
 
+async function readDestinationSymlinks(
+  programs: ProgramsCapability,
+  resolved: ResolvedInputs,
+  destAllEntries: readonly TreeEntry[],
+): Promise<{
+  readonly symlinks: ReadonlyMap<string, string>;
+  readonly notChecked: readonly NotCheckedItem[];
+}> {
+  const symlinks = new Map<string, string>();
+  const notChecked: NotCheckedItem[] = [];
+  for (const entry of destAllEntries) {
+    if (entry.mode !== symlinkMode) continue;
+    const blob = await readBlobText(
+      programs,
+      resolved.binaries,
+      resolved.destinationRepo,
+      entry.hash,
+    );
+    if (blob.kind === "text") {
+      symlinks.set(entry.repoPath, blob.text);
+    } else if (blob.kind === "unreadable") {
+      notChecked.push({
+        check: "markdown-links",
+        reason: `Could not read symlink ${entry.repoPath}: ${blob.reason}.`,
+      });
+    }
+  }
+  return { symlinks, notChecked };
+}
+
 async function checkDestinationMarkdownLinks(
   programs: ProgramsCapability,
   resolved: ResolvedInputs,
@@ -281,10 +171,11 @@ async function checkDestinationMarkdownLinks(
   const notChecked: NotCheckedItem[] = [];
   for (const entry of destFolderEntries) {
     if (!sourceRelatives.has(entry.relativePath)) continue;
-    if (!entry.repoPath.toLowerCase().endsWith(".md")) continue;
+    if (entry.mode === symlinkMode) continue;
+    if (!isMarkdownPath(entry.repoPath)) continue;
     const blob = await readBlobText(
       programs,
-      resolved.binaries.git,
+      resolved.binaries,
       resolved.destinationRepo,
       entry.hash,
     );
@@ -297,12 +188,21 @@ async function checkDestinationMarkdownLinks(
       });
     }
   }
+  if (movedMarkdown.length === 0) {
+    return { findings: [], notChecked };
+  }
+  const symlinkResult = await readDestinationSymlinks(
+    programs,
+    resolved,
+    destAllEntries,
+  );
   return {
     findings: findBrokenMarkdownLinks(
       movedMarkdown,
-      destAllEntries.map((entry) => entry.repoPath),
+      destAllEntries,
+      symlinkResult.symlinks,
     ),
-    notChecked,
+    notChecked: [...notChecked, ...symlinkResult.notChecked],
   };
 }
 
@@ -402,32 +302,54 @@ export async function evaluateMove(
 ): Promise<MoveEvaluation> {
   const resolvedResult = await resolveInputs(programs, parsePath, raw);
   if (!resolvedResult.ok) return resolvedResult;
-  const resolved = resolvedResult.resolved;
+  const { resolved } = resolvedResult;
 
   const sourceTree = await listTree(
     programs,
-    resolved.binaries.git,
+    resolved.binaries,
     resolved.sourceRepo,
     resolved.sourceBefore,
     resolved.sourceFolder,
   );
   if (!sourceTree.ok) return sourceTree;
+  if (sourceTree.entries.length === 0) {
+    return {
+      ok: false,
+      reason: emptyFolderReason(
+        "--source-folder",
+        resolved.sourceFolder,
+        resolved.sourceBefore,
+        resolved.sourceRepo,
+      ),
+    };
+  }
 
   const destFolderTree = await listTree(
     programs,
-    resolved.binaries.git,
+    resolved.binaries,
     resolved.destinationRepo,
     resolved.destAfter,
     resolved.destinationFolder,
   );
   if (!destFolderTree.ok) return destFolderTree;
+  if (destFolderTree.entries.length === 0) {
+    return {
+      ok: false,
+      reason: emptyFolderReason(
+        "--destination-folder",
+        resolved.destinationFolder,
+        resolved.destAfter,
+        resolved.destinationRepo,
+      ),
+    };
+  }
 
   const destAllTree =
     resolved.destinationFolder === ""
       ? destFolderTree
       : await listTree(
           programs,
-          resolved.binaries.git,
+          resolved.binaries,
           resolved.destinationRepo,
           resolved.destAfter,
           "",
