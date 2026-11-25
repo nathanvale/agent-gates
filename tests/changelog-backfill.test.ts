@@ -11,13 +11,13 @@ import {
   invokeChangelogCli,
   invokeChangelogCliJson,
   samplePullRequests,
-} from "./support/changelog-earlier.ts";
+} from "./support/changelog-backfill.ts";
 import { testFolder } from "./support/test-folder.ts";
 
 setDefaultTimeout(30_000);
 
 test("adds Earlier changes below existing version sections, keeping text above byte for byte, without writing files", () => {
-  const dir = testFolder("changelog-earlier-");
+  const dir = testFolder("changelog-backfill-");
   try {
     const prsPath = join(dir, "prs.json");
     const changelogPath = join(dir, "CHANGELOG.md");
@@ -36,7 +36,7 @@ test("adds Earlier changes below existing version sections, keeping text above b
 
     const ran = invokeChangelogCliJson(
       "changelog",
-      "earlier",
+      "backfill",
       "--pull-requests",
       prsPath,
       "--changelog",
@@ -64,7 +64,7 @@ test("adds Earlier changes below existing version sections, keeping text above b
     expect(ran.stderr).toBe("");
     expect(ran.envelope).toMatchObject({
       result: {
-        commandIdentity: "agent-gates.changelog-earlier",
+        commandIdentity: "agent-gates.changelog-backfill",
         causeCode: "SUCCESS_UNCHANGED",
         outcome: "success",
         data: { changelog: expectedChangelog },
@@ -77,7 +77,7 @@ test("adds Earlier changes below existing version sections, keeping text above b
 });
 
 test("builds a new changelog from the package title when CHANGELOG.md is missing, and a second run on its output is identical", () => {
-  const dir = testFolder("changelog-earlier-missing-");
+  const dir = testFolder("changelog-backfill-missing-");
   try {
     const prsPath = join(dir, "prs.json");
     const missingChangelogPath = join(dir, "CHANGELOG.md");
@@ -85,7 +85,7 @@ test("builds a new changelog from the package title when CHANGELOG.md is missing
 
     const first = invokeChangelogCliJson(
       "changelog",
-      "earlier",
+      "backfill",
       "--pull-requests",
       prsPath,
       "--changelog",
@@ -112,7 +112,7 @@ test("builds a new changelog from the package title when CHANGELOG.md is missing
     expect(first.stderr).toBe("");
     expect(first.envelope).toMatchObject({
       result: {
-        commandIdentity: "agent-gates.changelog-earlier",
+        commandIdentity: "agent-gates.changelog-backfill",
         causeCode: "SUCCESS_UNCHANGED",
         data: { changelog: expectedChangelog },
       },
@@ -122,7 +122,7 @@ test("builds a new changelog from the package title when CHANGELOG.md is missing
     writeFileSync(missingChangelogPath, expectedChangelog);
     const second = invokeChangelogCliJson(
       "changelog",
-      "earlier",
+      "backfill",
       "--pull-requests",
       prsPath,
       "--changelog",
@@ -137,7 +137,7 @@ test("builds a new changelog from the package title when CHANGELOG.md is missing
     expect(second.stderr).toBe("");
     expect(second.envelope).toMatchObject({
       result: {
-        commandIdentity: "agent-gates.changelog-earlier",
+        commandIdentity: "agent-gates.changelog-backfill",
         causeCode: "SUCCESS_UNCHANGED",
         data: { changelog: expectedChangelog },
       },
@@ -148,7 +148,7 @@ test("builds a new changelog from the package title when CHANGELOG.md is missing
 });
 
 test("replaces an existing Earlier changes section while keeping text above it byte for byte", () => {
-  const dir = testFolder("changelog-earlier-replace-");
+  const dir = testFolder("changelog-backfill-replace-");
   try {
     const prsPath = join(dir, "prs.json");
     const changelogPath = join(dir, "CHANGELOG.md");
@@ -159,7 +159,7 @@ test("replaces an existing Earlier changes section while keeping text above it b
 
     const ran = invokeChangelogCliJson(
       "changelog",
-      "earlier",
+      "backfill",
       "--pull-requests",
       prsPath,
       "--changelog",
@@ -185,7 +185,7 @@ test("replaces an existing Earlier changes section while keeping text above it b
     expect(ran.exitCode).toBe(0);
     expect(ran.envelope).toMatchObject({
       result: {
-        commandIdentity: "agent-gates.changelog-earlier",
+        commandIdentity: "agent-gates.changelog-backfill",
         causeCode: "SUCCESS_UNCHANGED",
         data: { changelog: expectedChangelog },
       },
@@ -196,14 +196,14 @@ test("replaces an existing Earlier changes section while keeping text above it b
 });
 
 test("refuses an unreadable pull request list with cause and repair", () => {
-  const dir = testFolder("changelog-earlier-unreadable-");
+  const dir = testFolder("changelog-backfill-unreadable-");
   try {
     const missingPrsPath = join(dir, "does-not-exist.json");
     const changelogPath = join(dir, "CHANGELOG.md");
 
     const ran = invokeChangelogCliJson(
       "changelog",
-      "earlier",
+      "backfill",
       "--pull-requests",
       missingPrsPath,
       "--changelog",
@@ -218,7 +218,7 @@ test("refuses an unreadable pull request list with cause and repair", () => {
     expect(ran.stderr).toBe("");
     expect(ran.envelope).toMatchObject({
       result: {
-        commandIdentity: "agent-gates.changelog-earlier",
+        commandIdentity: "agent-gates.changelog-backfill",
         causeCode: "DOMAIN_CHANGELOG_PULL_REQUESTS_INVALID",
         outcome: "refused",
         data: null,
@@ -229,7 +229,7 @@ test("refuses an unreadable pull request list with cause and repair", () => {
 
     const plain = invokeChangelogCli(
       "changelog",
-      "earlier",
+      "backfill",
       "--pull-requests",
       missingPrsPath,
       "--changelog",
@@ -248,7 +248,7 @@ test("refuses an unreadable pull request list with cause and repair", () => {
 });
 
 test("refuses a malformed pull request list with cause and repair", () => {
-  const dir = testFolder("changelog-earlier-malformed-");
+  const dir = testFolder("changelog-backfill-malformed-");
   try {
     const badJsonPath = join(dir, "bad.json");
     const badShapePath = join(dir, "bad-shape.json");
@@ -264,7 +264,7 @@ test("refuses a malformed pull request list with cause and repair", () => {
     for (const prsPath of [badJsonPath, badShapePath]) {
       const ran = invokeChangelogCliJson(
         "changelog",
-        "earlier",
+        "backfill",
         "--pull-requests",
         prsPath,
         "--changelog",
@@ -279,7 +279,7 @@ test("refuses a malformed pull request list with cause and repair", () => {
       expect(ran.stderr).toBe("");
       expect(ran.envelope).toMatchObject({
         result: {
-          commandIdentity: "agent-gates.changelog-earlier",
+          commandIdentity: "agent-gates.changelog-backfill",
           causeCode: "DOMAIN_CHANGELOG_PULL_REQUESTS_INVALID",
           outcome: "refused",
           data: null,
@@ -294,7 +294,7 @@ test("refuses a malformed pull request list with cause and repair", () => {
 });
 
 test("refuses when the adopting pull request number is not in the list", () => {
-  const dir = testFolder("changelog-earlier-adopting-missing-");
+  const dir = testFolder("changelog-backfill-adopting-missing-");
   try {
     const prsPath = join(dir, "prs.json");
     const changelogPath = join(dir, "CHANGELOG.md");
@@ -302,7 +302,7 @@ test("refuses when the adopting pull request number is not in the list", () => {
 
     const ran = invokeChangelogCliJson(
       "changelog",
-      "earlier",
+      "backfill",
       "--pull-requests",
       prsPath,
       "--changelog",
@@ -317,7 +317,7 @@ test("refuses when the adopting pull request number is not in the list", () => {
     expect(ran.stderr).toBe("");
     expect(ran.envelope).toMatchObject({
       result: {
-        commandIdentity: "agent-gates.changelog-earlier",
+        commandIdentity: "agent-gates.changelog-backfill",
         causeCode: "DOMAIN_CHANGELOG_ADOPTING_PR_MISSING",
         outcome: "refused",
         data: null,
@@ -331,7 +331,7 @@ test("refuses when the adopting pull request number is not in the list", () => {
 });
 
 test("refuses when no pull requests were merged before the adopting pull request", () => {
-  const dir = testFolder("changelog-earlier-none-");
+  const dir = testFolder("changelog-backfill-none-");
   try {
     const prsPath = join(dir, "prs.json");
     const changelogPath = join(dir, "CHANGELOG.md");
@@ -339,7 +339,7 @@ test("refuses when no pull requests were merged before the adopting pull request
 
     const ran = invokeChangelogCliJson(
       "changelog",
-      "earlier",
+      "backfill",
       "--pull-requests",
       prsPath,
       "--changelog",
@@ -354,7 +354,7 @@ test("refuses when no pull requests were merged before the adopting pull request
     expect(ran.stderr).toBe("");
     expect(ran.envelope).toMatchObject({
       result: {
-        commandIdentity: "agent-gates.changelog-earlier",
+        commandIdentity: "agent-gates.changelog-backfill",
         causeCode: "DOMAIN_CHANGELOG_NO_EARLIER_PRS",
         outcome: "refused",
         data: null,
@@ -368,7 +368,7 @@ test("refuses when no pull requests were merged before the adopting pull request
 });
 
 test("refuses when the changelog path exists but cannot be read as a file", () => {
-  const dir = testFolder("changelog-earlier-dir-");
+  const dir = testFolder("changelog-backfill-dir-");
   try {
     const prsPath = join(dir, "prs.json");
     const changelogDirPath = join(dir, "CHANGELOG.md");
@@ -377,7 +377,7 @@ test("refuses when the changelog path exists but cannot be read as a file", () =
 
     const ran = invokeChangelogCliJson(
       "changelog",
-      "earlier",
+      "backfill",
       "--pull-requests",
       prsPath,
       "--changelog",
@@ -392,7 +392,7 @@ test("refuses when the changelog path exists but cannot be read as a file", () =
     expect(ran.stderr).toBe("");
     expect(ran.envelope).toMatchObject({
       result: {
-        commandIdentity: "agent-gates.changelog-earlier",
+        commandIdentity: "agent-gates.changelog-backfill",
         causeCode: "DOMAIN_CHANGELOG_UNREADABLE",
         outcome: "refused",
         data: null,
@@ -400,6 +400,89 @@ test("refuses when the changelog path exists but cannot be read as a file", () =
           "Pass --changelog pointing to a readable file path or a path that does not yet exist.",
       },
     });
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+function readEnvelopeResultData(envelope: unknown): unknown {
+  if (typeof envelope !== "object" || envelope === null) {
+    return undefined;
+  }
+  if (!Object.hasOwn(envelope, "result")) {
+    return undefined;
+  }
+  const result: unknown = Reflect.get(envelope, "result");
+  if (typeof result !== "object" || result === null) {
+    return undefined;
+  }
+  return Object.hasOwn(result, "data")
+    ? Reflect.get(result, "data")
+    : undefined;
+}
+
+test("keeps changelog earlier working as the old route with byte-identical result data and points to changelog backfill in help", () => {
+  const dir = testFolder("changelog-backfill-alias-");
+  try {
+    const prsPath = join(dir, "prs.json");
+    const changelogPath = join(dir, "CHANGELOG.md");
+    writeFileSync(prsPath, JSON.stringify(samplePullRequests));
+
+    const backfill = invokeChangelogCliJson(
+      "changelog",
+      "backfill",
+      "--pull-requests",
+      prsPath,
+      "--changelog",
+      changelogPath,
+      "--package",
+      "my-pkg",
+      "--changesets-from",
+      "5",
+    );
+    const earlier = invokeChangelogCliJson(
+      "changelog",
+      "earlier",
+      "--pull-requests",
+      prsPath,
+      "--changelog",
+      changelogPath,
+      "--package",
+      "my-pkg",
+      "--changesets-from",
+      "5",
+    );
+
+    expect(backfill.exitCode).toBe(0);
+    expect(backfill.stderr).toBe("");
+    expect(earlier.exitCode).toBe(0);
+    expect(earlier.stderr).toBe("");
+
+    expect(backfill.envelope).toMatchObject({
+      result: {
+        commandIdentity: "agent-gates.changelog-backfill",
+        causeCode: "SUCCESS_UNCHANGED",
+        outcome: "success",
+      },
+    });
+    expect(earlier.envelope).toMatchObject({
+      result: {
+        commandIdentity: "agent-gates.changelog-earlier",
+        causeCode: "SUCCESS_UNCHANGED",
+        outcome: "success",
+      },
+    });
+
+    const backfillData = readEnvelopeResultData(backfill.envelope);
+    const earlierData = readEnvelopeResultData(earlier.envelope);
+    expect(backfillData).not.toBeUndefined();
+    expect(JSON.stringify(earlierData)).toBe(JSON.stringify(backfillData));
+
+    const help = invokeChangelogCli("--help");
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout).toContain("changelog backfill");
+    expect(help.stdout).toContain("changelog earlier");
+    expect(help.stdout).toContain("Old name for changelog backfill.");
   } finally {
     rmSync(dir, { recursive: true });
   }

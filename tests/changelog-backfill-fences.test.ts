@@ -4,7 +4,7 @@ import { join } from "node:path";
 import {
   invokeChangelogCliJson,
   samplePullRequests,
-} from "./support/changelog-earlier.ts";
+} from "./support/changelog-backfill.ts";
 import { testFolder } from "./support/test-folder.ts";
 
 setDefaultTimeout(30_000);
@@ -19,8 +19,8 @@ const renderedEarlierSection = [
   "",
 ].join("\n");
 
-function runChangelogEarlier(existingChangelog: string) {
-  const dir = testFolder("changelog-earlier-fences-");
+function runChangelogBackfill(existingChangelog: string) {
+  const dir = testFolder("changelog-backfill-fences-");
   try {
     const prsPath = join(dir, "prs.json");
     const changelogPath = join(dir, "CHANGELOG.md");
@@ -28,7 +28,7 @@ function runChangelogEarlier(existingChangelog: string) {
     writeFileSync(changelogPath, existingChangelog);
     return invokeChangelogCliJson(
       "changelog",
-      "earlier",
+      "backfill",
       "--pull-requests",
       prsPath,
       "--changelog",
@@ -61,13 +61,13 @@ test("ignores Earlier changes inside a backtick fence and keeps every byte above
   ].join("\r\n");
   const existing = `${above}## Earlier changes\n\n- stale entry\n`;
 
-  const ran = runChangelogEarlier(existing);
+  const ran = runChangelogBackfill(existing);
 
   expect(ran.exitCode).toBe(0);
   expect(ran.stderr).toBe("");
   expect(ran.envelope).toMatchObject({
     result: {
-      commandIdentity: "agent-gates.changelog-earlier",
+      commandIdentity: "agent-gates.changelog-backfill",
       causeCode: "SUCCESS_UNCHANGED",
       data: { changelog: `${above}${renderedEarlierSection}` },
     },
@@ -91,13 +91,13 @@ test("ignores Earlier changes inside a tilde fence and appends the section last 
     "",
   ].join("\n");
 
-  const ran = runChangelogEarlier(existing);
+  const ran = runChangelogBackfill(existing);
 
   expect(ran.exitCode).toBe(0);
   expect(ran.stderr).toBe("");
   expect(ran.envelope).toMatchObject({
     result: {
-      commandIdentity: "agent-gates.changelog-earlier",
+      commandIdentity: "agent-gates.changelog-backfill",
       causeCode: "SUCCESS_UNCHANGED",
       data: { changelog: `${existing}${renderedEarlierSection}` },
     },
@@ -123,13 +123,13 @@ test("ignores Earlier changes inside a four-backtick fence containing a three-ba
   ].join("\n");
   const existing = `${above}## Earlier changes\n\n- stale entry\n`;
 
-  const ran = runChangelogEarlier(existing);
+  const ran = runChangelogBackfill(existing);
 
   expect(ran.exitCode).toBe(0);
   expect(ran.stderr).toBe("");
   expect(ran.envelope).toMatchObject({
     result: {
-      commandIdentity: "agent-gates.changelog-earlier",
+      commandIdentity: "agent-gates.changelog-backfill",
       causeCode: "SUCCESS_UNCHANGED",
       data: { changelog: `${above}${renderedEarlierSection}` },
     },
@@ -152,13 +152,13 @@ test("refuses an unclosed fence instead of appending Earlier changes inside the 
     "",
   ].join("\n");
 
-  const ran = runChangelogEarlier(existing);
+  const ran = runChangelogBackfill(existing);
 
   expect(ran.exitCode).toBe(3);
   expect(ran.stderr).toBe("");
   expect(ran.envelope).toMatchObject({
     result: {
-      commandIdentity: "agent-gates.changelog-earlier",
+      commandIdentity: "agent-gates.changelog-backfill",
       causeCode: "DOMAIN_CHANGELOG_SHAPE_UNSUPPORTED",
       outcome: "refused",
       data: null,
@@ -176,26 +176,26 @@ function assertReplacesSectionOnceAndRepeatsIdentically(
   staleSection: string,
 ): void {
   const expected = `${above}${renderedEarlierSection}`;
-  const first = runChangelogEarlier(`${above}${staleSection}`);
+  const first = runChangelogBackfill(`${above}${staleSection}`);
 
   expect(first.exitCode).toBe(0);
   expect(first.stderr).toBe("");
   expect(first.envelope).toMatchObject({
     result: {
-      commandIdentity: "agent-gates.changelog-earlier",
+      commandIdentity: "agent-gates.changelog-backfill",
       causeCode: "SUCCESS_UNCHANGED",
       data: { changelog: expected },
     },
   });
   expect(countEarlierHeadings(expected)).toBe(1);
 
-  const second = runChangelogEarlier(expected);
+  const second = runChangelogBackfill(expected);
 
   expect(second.exitCode).toBe(0);
   expect(second.stderr).toBe("");
   expect(second.envelope).toMatchObject({
     result: {
-      commandIdentity: "agent-gates.changelog-earlier",
+      commandIdentity: "agent-gates.changelog-backfill",
       causeCode: "SUCCESS_UNCHANGED",
       data: { changelog: expected },
     },

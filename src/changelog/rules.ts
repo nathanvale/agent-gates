@@ -248,7 +248,7 @@ function verifyEarlierChangelog(
   }
   const rerun = computeEarlierChangelog(candidate, packageName, earlier);
   if (!rerun.ok || rerun.changelog !== candidate) {
-    return "Re-running changelog earlier on the built changelog did not return the same result.";
+    return "Re-running changelog backfill on the built changelog did not return the same result.";
   }
   return null;
 }
