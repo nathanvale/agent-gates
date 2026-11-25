@@ -14,3 +14,7 @@ _Avoid_: shipped path
 
 **Earlier changes**:
 The final `## Earlier changes` section of `CHANGELOG.md`, listing pull requests merged before a repository adopted Changesets in merge order.
+
+**Move**:
+Files carried from a source tree (repository, commit, folder) to a destination tree, by copy, import or merge.
+_Avoid_: the act of moving; a Move is the record of what was carried

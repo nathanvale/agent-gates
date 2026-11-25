@@ -17,7 +17,15 @@ export const causes = {
   DOMAIN_CHANGELOG_NO_EARLIER_PRS: domainRefusal,
   DOMAIN_CHANGELOG_UNREADABLE: domainRefusal,
   DOMAIN_CHANGELOG_SHAPE_UNSUPPORTED: domainRefusal,
+  DOMAIN_MOVE_FILE_DROPPED: domainRefusal,
+  DOMAIN_MOVE_FILE_CHANGED: domainRefusal,
+  DOMAIN_MOVE_REFERENCE_DANGLING: domainRefusal,
+  DOMAIN_MOVE_SOURCE_KEPT: domainRefusal,
+  DOMAIN_MOVE_TEST_DROPPED: domainRefusal,
 } as const satisfies CauseTable;
+
+export const preconditionUnmet =
+  "DOMAIN_PRECONDITION_UNMET" satisfies keyof typeof commonCauses;
 
 export const changelogShapeUnsupported =
   "DOMAIN_CHANGELOG_SHAPE_UNSUPPORTED" satisfies keyof typeof causes;

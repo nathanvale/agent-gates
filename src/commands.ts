@@ -1,6 +1,12 @@
-import { command } from "agent-cli-kernel";
+import { command, contractFor } from "agent-cli-kernel";
 import { changelogBackfill, changelogEarlier } from "./changelog/backfill.ts";
-import { noInput, nothingChanged, unchangedSuccess } from "./shared/causes.ts";
+import { createMoveCheck } from "./move/check.ts";
+import {
+  causes,
+  noInput,
+  nothingChanged,
+  unchangedSuccess,
+} from "./shared/causes.ts";
 
 const status = command({
   identity: "agent-gates.status",
@@ -19,4 +25,18 @@ const status = command({
     ),
 });
 
-export const commands = [status, changelogBackfill, changelogEarlier] as const;
+const moveCheck = createMoveCheck(() => contract.boundary.path);
+
+export const commands = [
+  status,
+  changelogBackfill,
+  changelogEarlier,
+  moveCheck,
+] as const;
+
+export const contract = contractFor({
+  cli: "agent-gates",
+  commands,
+  causes,
+  installedAddons: ["programs"],
+});
