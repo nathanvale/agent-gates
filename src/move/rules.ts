@@ -21,6 +21,8 @@ export type MoveFinding = {
   readonly path: string;
   readonly sourceHash?: string;
   readonly destinationHash?: string;
+  readonly sourceMode?: string;
+  readonly destinationMode?: string;
   readonly reference?: string;
   readonly keptAt?: string;
   readonly beforeCount?: number;
@@ -172,12 +174,17 @@ export function compareTrees(
         path: sourceEntry.relativePath,
         sourceHash: sourceEntry.hash,
       });
-    } else if (destEntry.hash !== sourceEntry.hash) {
+    } else if (
+      destEntry.hash !== sourceEntry.hash ||
+      destEntry.mode !== sourceEntry.mode
+    ) {
       findings.push({
         cause: "DOMAIN_MOVE_FILE_CHANGED",
         path: sourceEntry.relativePath,
         sourceHash: sourceEntry.hash,
         destinationHash: destEntry.hash,
+        sourceMode: sourceEntry.mode,
+        destinationMode: destEntry.mode,
       });
     }
   }
