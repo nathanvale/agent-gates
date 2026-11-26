@@ -9,11 +9,12 @@ import {
   readdirSync,
   readSync,
   realpathSync,
+  renameSync,
   rmSync,
-  writeFileSync,
+  writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { basename, isAbsolute, join, relative } from "node:path";
 
 export type TestRunEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -25,6 +26,7 @@ export const testRunProcessMark = ".test-run-process";
 const bareTempMilliseconds = 10_000;
 const signalGraceMilliseconds = 2_000;
 const runFolderPrefix = "test-run-";
+const startingFolderPattern = new RegExp(`^${runFolderPrefix}([1-9]\\d*)-`);
 const missingCodes = new Set<unknown>(["ENOENT", "ENOTDIR"]);
 const stoppedCodes = new Set<unknown>(["ESRCH", "EPERM"]);
 const liveMarkPattern = new RegExp(
@@ -32,6 +34,25 @@ const liveMarkPattern = new RegExp(
 );
 const markFlags =
   constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+function writeProcessMark(runFolder: string, pid: number): number {
+  const tempMark = join(runFolder, `${testRunProcessMark}.tmp`);
+  const fd = openSync(
+    tempMark,
+    constants.O_CREAT |
+      constants.O_EXCL |
+      constants.O_RDWR |
+      constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    writeSync(fd, `${testRunProcessVariable}=${pid}\n`);
+    renameSync(tempMark, join(runFolder, testRunProcessMark));
+    return fd;
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
 
 export function insideFolder(path: string, folder: string): boolean {
   const way = relative(folder, path);
@@ -106,6 +127,7 @@ export type TestRunOptions = {
   readonly strict: boolean;
   readonly report: (line: string) => void;
   readonly limitMilliseconds?: number;
+  readonly leftoverOwner?: number;
 };
 
 function readProcessMark(folder: string): number | undefined {
@@ -116,7 +138,8 @@ function readProcessMark(folder: string): number | undefined {
     return undefined;
   }
   try {
-    if (!fstatSync(fd).isFile()) return undefined;
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1) return undefined;
     const buffer = new Uint8Array(64);
     const bytes = readSync(fd, buffer, 0, 64, 0);
     const text = new TextDecoder("utf-8", {
@@ -124,7 +147,8 @@ function readProcessMark(folder: string): number | undefined {
       ignoreBOM: true,
     }).decode(buffer.subarray(0, bytes));
     const pid = Number(liveMarkPattern.exec(text)?.[1]);
-    return Number.isSafeInteger(pid) ? pid : undefined;
+    if (!Number.isSafeInteger(pid)) return undefined;
+    return pid;
   } catch {
     return undefined;
   } finally {
@@ -132,14 +156,7 @@ function readProcessMark(folder: string): number | undefined {
   }
 }
 
-function isLiveRunFolder(path: string): boolean {
-  try {
-    if (!lstatSync(path).isDirectory()) return false;
-  } catch (error) {
-    return missingCodes.has(Reflect.get(Object(error), "code"));
-  }
-  const pid = readProcessMark(path);
-  if (pid === undefined) return false;
+function processAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -148,16 +165,80 @@ function isLiveRunFolder(path: string): boolean {
   }
 }
 
+function entryKind(path: string): "directory" | "missing" | "other" {
+  try {
+    return lstatSync(path).isDirectory() ? "directory" : "other";
+  } catch (error) {
+    return missingCodes.has(Reflect.get(Object(error), "code"))
+      ? "missing"
+      : "other";
+  }
+}
+
+function isStartingRunFolder(path: string): boolean {
+  const pid = Number(startingFolderPattern.exec(basename(path))?.[1]);
+  return Number.isSafeInteger(pid) && processAlive(pid);
+}
+
+function hasMarkEntry(path: string): boolean {
+  return (
+    lstatSync(join(path, testRunProcessMark), { throwIfNoEntry: false }) !==
+    undefined
+  );
+}
+
+function isLiveRunFolder(path: string): boolean {
+  const kind = entryKind(path);
+  if (kind !== "directory") return kind === "missing";
+  const pid = readProcessMark(path);
+  if (pid !== undefined) return processAlive(pid);
+  if (hasMarkEntry(path)) return false;
+  return isStartingRunFolder(path);
+}
+
+const bunNodeFolder = `bun-node-${process.getuid?.()}-${Bun.revision.slice(0, 9)}`;
+
+function isBunOwnFolder(
+  folder: string,
+  name: string,
+  stateFolder: string | undefined,
+): boolean {
+  if (name !== bunNodeFolder || folder === stateFolder) return false;
+  try {
+    return lstatSync(join(folder, name)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function ownedBy(path: string, owner: number | undefined): boolean {
+  if (owner === undefined) return true;
+  try {
+    return lstatSync(path).uid === owner;
+  } catch {
+    return true;
+  }
+}
+
 function leftoversOf(
   folders: readonly string[],
   before: ReadonlyMap<string, Set<string>>,
   runFolder: string,
+  stateFolder: string | undefined,
+  owner: number | undefined,
 ): string[] {
   return folders.flatMap((folder) =>
     [...namesIn(folder)]
-      .filter((name) => !before.get(folder)?.has(name))
+      .filter(
+        (name) =>
+          !isBunOwnFolder(folder, name, stateFolder) &&
+          !before.get(folder)?.has(name),
+      )
       .map((name) => join(folder, name))
-      .filter((path) => path !== runFolder && !isLiveRunFolder(path)),
+      .filter(
+        (path) =>
+          path !== runFolder && !isLiveRunFolder(path) && ownedBy(path, owner),
+      ),
   );
 }
 
@@ -252,20 +333,22 @@ export async function runTests(
   const parent = realFolder(
     options.env.STATE_TEST_DIR || options.env.TMPDIR || tmpdir(),
   );
-  const runFolder = realFolder(mkdtempSync(join(parent, runFolderPrefix)));
-  writeFileSync(
-    join(runFolder, testRunProcessMark),
-    `${testRunProcessVariable}=${process.pid}\n`,
+  const runFolder = realFolder(
+    mkdtempSync(join(parent, `${runFolderPrefix}${process.pid}-`)),
   );
-  const child = startBunTest(args, options, runFolder);
   const problems: string[] = [];
+  let markFd: number | undefined;
+  let child: ReturnType<typeof startBunTest> | undefined;
   let code: number;
   let marked: boolean;
   try {
+    markFd = writeProcessMark(runFolder, process.pid);
+    child = startBunTest(args, options, runFolder);
     code = await finished(child, options);
   } finally {
-    stopProcess(child.pid, true);
+    if (child !== undefined) stopProcess(child.pid, true);
     marked = existsSync(join(runFolder, teardownMark));
+    if (markFd !== undefined) closeSync(markFd);
     rmSync(runFolder, { recursive: true, force: true });
   }
   if (code === 0 && !marked)
@@ -274,7 +357,15 @@ export async function runTests(
     );
   problems.push(
     ...leftoverProblems(
-      leftoversOf(options.leftoverFolders, before, runFolder),
+      leftoversOf(
+        options.leftoverFolders,
+        before,
+        runFolder,
+        options.env.STATE_TEST_DIR
+          ? realFolder(options.env.STATE_TEST_DIR)
+          : undefined,
+        options.leftoverOwner ?? process.getuid?.(),
+      ),
       options,
     ),
   );
