@@ -405,42 +405,14 @@ test("refuses when the changelog path exists but cannot be read as a file", () =
   }
 });
 
-function readEnvelopeResultData(envelope: unknown): unknown {
-  if (typeof envelope !== "object" || envelope === null) {
-    return undefined;
-  }
-  if (!Object.hasOwn(envelope, "result")) {
-    return undefined;
-  }
-  const result: unknown = Reflect.get(envelope, "result");
-  if (typeof result !== "object" || result === null) {
-    return undefined;
-  }
-  return Object.hasOwn(result, "data")
-    ? Reflect.get(result, "data")
-    : undefined;
-}
-
-test("keeps changelog earlier working as the old route with byte-identical result data and points to changelog backfill in help", () => {
-  const dir = testFolder("changelog-backfill-alias-");
+test("declines the removed earlier route and exposes only changelog backfill in help and discovery", () => {
+  const dir = testFolder("changelog-backfill-removed-");
   try {
     const prsPath = join(dir, "prs.json");
     const changelogPath = join(dir, "CHANGELOG.md");
     writeFileSync(prsPath, JSON.stringify(samplePullRequests));
 
-    const backfill = invokeChangelogCliJson(
-      "changelog",
-      "backfill",
-      "--pull-requests",
-      prsPath,
-      "--changelog",
-      changelogPath,
-      "--package",
-      "my-pkg",
-      "--changesets-from",
-      "5",
-    );
-    const earlier = invokeChangelogCliJson(
+    const declined = invokeChangelogCliJson(
       "changelog",
       "earlier",
       "--pull-requests",
@@ -453,36 +425,46 @@ test("keeps changelog earlier working as the old route with byte-identical resul
       "5",
     );
 
-    expect(backfill.exitCode).toBe(0);
-    expect(backfill.stderr).toBe("");
-    expect(earlier.exitCode).toBe(0);
-    expect(earlier.stderr).toBe("");
-
-    expect(backfill.envelope).toMatchObject({
+    expect(declined.exitCode).toBe(2);
+    expect(declined.stderr).toBe("");
+    expect(declined.envelope).toMatchObject({
       result: {
-        commandIdentity: "agent-gates.changelog-backfill",
-        causeCode: "SUCCESS_UNCHANGED",
-        outcome: "success",
+        commandIdentity: "agent-gates.dispatch",
+        causeCode: "USAGE_UNKNOWN_COMMAND",
+        failureClass: "usage",
+        outcome: "refused",
+        data: null,
       },
     });
-    expect(earlier.envelope).toMatchObject({
-      result: {
-        commandIdentity: "agent-gates.changelog-earlier",
-        causeCode: "SUCCESS_UNCHANGED",
-        outcome: "success",
-      },
-    });
-
-    const backfillData = readEnvelopeResultData(backfill.envelope);
-    const earlierData = readEnvelopeResultData(earlier.envelope);
-    expect(backfillData).not.toBeUndefined();
-    expect(JSON.stringify(earlierData)).toBe(JSON.stringify(backfillData));
 
     const help = invokeChangelogCli("--help");
     expect(help.exitCode).toBe(0);
-    expect(help.stdout).toContain("changelog backfill");
-    expect(help.stdout).toContain("changelog earlier");
-    expect(help.stdout).toContain("Old name for changelog backfill.");
+    expect(help.stdout).toContain(
+      "changelog backfill (agent-gates.changelog-backfill)",
+    );
+    expect(help.stdout).not.toContain(["changelog", "earlier"].join(" "));
+    expect(help.stdout).not.toContain(["changelog", "earlier"].join("-"));
+
+    const discover = invokeChangelogCliJson("--discover");
+    expect(discover.exitCode).toBe(0);
+    expect(discover.stderr).toBe("");
+    expect(discover.envelope).toMatchObject({
+      availablePaths: [
+        "agent-gates.changelog-backfill",
+        "agent-gates.command-discovery",
+        "agent-gates.discovery",
+        "agent-gates.dispatch",
+        "agent-gates.help",
+        "agent-gates.history-scan",
+        "agent-gates.move-check",
+        "agent-gates.status",
+      ],
+      result: {
+        commandIdentity: "agent-gates.discovery",
+        causeCode: "SUCCESS_UNCHANGED",
+        outcome: "success",
+      },
+    });
   } finally {
     rmSync(dir, { recursive: true });
   }
