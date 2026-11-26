@@ -245,55 +245,66 @@ function pushSegmentsReversed(pending: string[], rawPath: string): void {
   }
 }
 
-function applySegment(
-  segment: string,
-  current: string[],
-  pending: string[],
-  symlinks: ReadonlyMap<string, string>,
-  hops: { count: number },
-): boolean {
+type PathWalkState = {
+  readonly current: string[];
+  readonly pending: string[];
+  readonly dirSet: ReadonlySet<string>;
+  readonly symlinks: ReadonlyMap<string, string>;
+  hops: number;
+};
+
+function applySegment(segment: string, state: PathWalkState): boolean {
   if (segment === "" || segment === ".") return true;
   if (segment === "..") {
-    if (current.length === 0) return false;
-    current.pop();
+    if (state.current.length === 0) return false;
+    state.current.pop();
     return true;
   }
-  const symlinkTarget = symlinks.get(joinSegment(current, segment));
+  const candidate = joinSegment(state.current, segment);
+  const symlinkTarget = state.symlinks.get(candidate);
   if (symlinkTarget === undefined) {
-    current.push(segment);
+    if (state.pending.length > 0 && !state.dirSet.has(candidate)) {
+      return false;
+    }
+    state.current.push(segment);
     return true;
   }
-  hops.count += 1;
+  state.hops += 1;
   if (
-    hops.count > maxSymlinkHops ||
+    state.hops > maxSymlinkHops ||
     symlinkTarget.length === 0 ||
     symlinkTarget.startsWith("/")
   ) {
     return false;
   }
-  pushSegmentsReversed(pending, symlinkTarget);
+  pushSegmentsReversed(state.pending, symlinkTarget);
   return true;
 }
 
 function resolvePathThroughSymlinks(
   fromRepoPath: string,
   decodedTarget: string,
+  dirSet: ReadonlySet<string>,
   symlinks: ReadonlyMap<string, string>,
 ): string | null {
-  const current = initialFolderSegments(fromRepoPath);
-  const pending: string[] = [];
-  pushSegmentsReversed(pending, decodedTarget);
-  const hops = { count: 0 };
+  const state: PathWalkState = {
+    current: initialFolderSegments(fromRepoPath),
+    pending: [],
+    dirSet,
+    symlinks,
+    hops: 0,
+  };
+  pushSegmentsReversed(state.pending, decodedTarget);
 
-  while (pending.length > 0) {
-    const segment = pending.pop();
+  while (state.pending.length > 0) {
+    const segment = state.pending.pop();
     if (segment === undefined) continue;
-    if (!applySegment(segment, current, pending, symlinks, hops)) {
+    if (!applySegment(segment, state)) {
       return null;
     }
   }
 
-  return current.join("/");
+  return state.current.join("/");
 }
 
 function buildDestinationIndex(destinationEntries: readonly TreeEntry[]): {
@@ -328,6 +339,7 @@ function isLinkTargetResolved(
   const finalTarget = resolvePathThroughSymlinks(
     fromRepoPath,
     decoded,
+    index.dirSet,
     symlinks,
   );
   if (finalTarget === null) return false;
