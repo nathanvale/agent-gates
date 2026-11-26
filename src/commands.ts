@@ -1,5 +1,5 @@
 import { command, contractFor } from "agent-cli-kernel";
-import { changelogBackfill, changelogEarlier } from "./changelog/backfill.ts";
+import { changelogBackfill } from "./changelog/backfill.ts";
 import { createHistoryScan } from "./history/scan.ts";
 import { createMoveCheck } from "./move/check.ts";
 import {
@@ -32,7 +32,6 @@ const historyScan = createHistoryScan(() => contract.boundary.path);
 export const commands = [
   status,
   changelogBackfill,
-  changelogEarlier,
   moveCheck,
   historyScan,
 ] as const;
