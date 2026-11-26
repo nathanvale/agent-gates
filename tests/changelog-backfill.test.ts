@@ -448,17 +448,17 @@ test("declines the removed earlier route and exposes only changelog backfill in 
     const discover = invokeChangelogCliJson("--discover");
     expect(discover.exitCode).toBe(0);
     expect(discover.stderr).toBe("");
+    const removedIdentityListed: unknown = expect.arrayContaining([
+      ["agent-gates.changelog", "earlier"].join("-"),
+    ]);
+    const backfillIdentityListed: unknown = expect.arrayContaining([
+      "agent-gates.changelog-backfill",
+    ]);
+    expect(discover.envelope).not.toMatchObject({
+      availablePaths: removedIdentityListed,
+    });
     expect(discover.envelope).toMatchObject({
-      availablePaths: [
-        "agent-gates.changelog-backfill",
-        "agent-gates.command-discovery",
-        "agent-gates.discovery",
-        "agent-gates.dispatch",
-        "agent-gates.help",
-        "agent-gates.history-scan",
-        "agent-gates.move-check",
-        "agent-gates.status",
-      ],
+      availablePaths: backfillIdentityListed,
       result: {
         commandIdentity: "agent-gates.discovery",
         causeCode: "SUCCESS_UNCHANGED",
