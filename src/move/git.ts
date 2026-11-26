@@ -9,12 +9,9 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ParsedPath, ProgramsCapability } from "agent-cli-kernel";
-import {
-  parseBunTestDiscovery,
-  parseTreeOutput,
-  resolveBunTestScript,
-} from "./rules.ts";
+import { parseTreeOutput } from "./rules.ts";
 import type { TreeEntry } from "./rules.ts";
+import { parseBunTestDiscovery, resolveBunTestScript } from "./test-script.ts";
 
 const defaultTimeoutMs = 15_000;
 const defaultShutdownMs = 1_000;
@@ -22,9 +19,20 @@ const treeOutputLimitBytes = 16_777_216;
 const blobOutputLimitBytes = 4_194_304;
 const testOutputLimitBytes = 2_097_152;
 
+export const strippedGitEnvVars = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+] as const;
+
+const unsetGitEnvArgs = strippedGitEnvVars.flatMap((name) => ["-u", name]);
+
 export type ToolBinaries = {
+  readonly env: ParsedPath;
   readonly git: ParsedPath;
-  readonly tar: ParsedPath;
   readonly bun: ParsedPath;
 };
 
@@ -33,53 +41,88 @@ export function resolveToolBinaries(
 ):
   | { readonly ok: true; readonly binaries: ToolBinaries }
   | { readonly ok: false; readonly reason: string } {
+  const env = Bun.which("env");
+  if (env === null) {
+    return { ok: false, reason: "env executable not found on PATH." };
+  }
   const git = Bun.which("git");
   if (git === null) {
     return { ok: false, reason: "git executable not found on PATH." };
   }
-  const tar = Bun.which("tar");
-  if (tar === null) {
-    return { ok: false, reason: "tar executable not found on PATH." };
-  }
   return {
     ok: true,
     binaries: {
+      env: parsePath(env),
       git: parsePath(git),
-      tar: parsePath(tar),
       bun: parsePath(process.execPath),
     },
   };
 }
 
-async function runGit(
+async function runWithCleanGitEnv(
   programs: ProgramsCapability,
-  git: ParsedPath,
-  repo: string,
+  binaries: ToolBinaries,
+  executable: ParsedPath,
+  extraEnv: readonly string[],
   args: readonly string[],
   outputLimitBytes: number,
 ) {
   return programs.inspect({
-    executable: git,
-    args: ["-C", repo, ...args],
+    executable: binaries.env,
+    args: [...unsetGitEnvArgs, ...extraEnv, executable, ...args],
     timeoutMilliseconds: defaultTimeoutMs,
     outputLimitBytes,
     shutdownMilliseconds: defaultShutdownMs,
   });
 }
 
-export async function resolveGitDir(
+async function runGitWithEnv(
   programs: ProgramsCapability,
-  git: ParsedPath,
+  binaries: ToolBinaries,
+  extraEnv: readonly string[],
+  args: readonly string[],
+  outputLimitBytes: number,
+) {
+  return runWithCleanGitEnv(
+    programs,
+    binaries,
+    binaries.git,
+    extraEnv,
+    args,
+    outputLimitBytes,
+  );
+}
+
+async function runGit(
+  programs: ProgramsCapability,
+  binaries: ToolBinaries,
   repo: string,
+  args: readonly string[],
+  outputLimitBytes: number,
+) {
+  return runGitWithEnv(
+    programs,
+    binaries,
+    [],
+    ["-C", repo, ...args],
+    outputLimitBytes,
+  );
+}
+
+async function resolveGitDirByFlag(
+  programs: ProgramsCapability,
+  binaries: ToolBinaries,
+  repo: string,
+  flag: "--git-common-dir" | "--git-dir",
 ): Promise<
   | { readonly ok: true; readonly gitDir: string }
   | { readonly ok: false; readonly reason: string }
 > {
   const result = await runGit(
     programs,
-    git,
+    binaries,
     repo,
-    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ["rev-parse", "--path-format=absolute", flag],
     65_536,
   );
   if (result.exitCode !== 0) {
@@ -92,9 +135,48 @@ export async function resolveGitDir(
   return { ok: true, gitDir: result.stdout.trim() };
 }
 
+export async function resolveGitDir(
+  programs: ProgramsCapability,
+  binaries: ToolBinaries,
+  repo: string,
+): Promise<
+  | { readonly ok: true; readonly gitDir: string }
+  | { readonly ok: false; readonly reason: string }
+> {
+  return resolveGitDirByFlag(programs, binaries, repo, "--git-common-dir");
+}
+
+async function resolveRepoGitDir(
+  programs: ProgramsCapability,
+  binaries: ToolBinaries,
+  repo: string,
+): Promise<
+  | { readonly ok: true; readonly gitDir: string }
+  | { readonly ok: false; readonly reason: string }
+> {
+  return resolveGitDirByFlag(programs, binaries, repo, "--git-dir");
+}
+
+async function resolveRepoTopLevel(
+  programs: ProgramsCapability,
+  binaries: ToolBinaries,
+  repo: string,
+): Promise<string> {
+  const result = await runGit(
+    programs,
+    binaries,
+    repo,
+    ["rev-parse", "--show-toplevel"],
+    65_536,
+  );
+  if (result.exitCode !== 0) return repo;
+  const topLevel = result.stdout.trim();
+  return topLevel.length > 0 ? topLevel : repo;
+}
+
 export async function resolveCommit(
   programs: ProgramsCapability,
-  git: ParsedPath,
+  binaries: ToolBinaries,
   repo: string,
   rev: string,
 ): Promise<
@@ -103,7 +185,7 @@ export async function resolveCommit(
 > {
   const result = await runGit(
     programs,
-    git,
+    binaries,
     repo,
     ["rev-parse", "--verify", `${rev}^{commit}`],
     65_536,
@@ -120,7 +202,7 @@ export async function resolveCommit(
 
 export async function listTree(
   programs: ProgramsCapability,
-  git: ParsedPath,
+  binaries: ToolBinaries,
   repo: string,
   commit: string,
   folder: string,
@@ -130,9 +212,21 @@ export async function listTree(
 > {
   const args =
     folder === ""
-      ? ["ls-tree", "-r", "-z", commit]
-      : ["ls-tree", "-r", "-z", commit, "--", folder];
-  const result = await runGit(programs, git, repo, args, treeOutputLimitBytes);
+      ? ["ls-tree", "-r", "-z", "--full-tree", commit]
+      : ["ls-tree", "-r", "-z", "--full-tree", commit, "--", folder];
+  const result = await runGit(
+    programs,
+    binaries,
+    repo,
+    args,
+    treeOutputLimitBytes,
+  );
+  if (result.outputTruncated) {
+    return {
+      ok: false,
+      reason: `Git tree listing at ${commit} in ${repo} exceeded the ${String(treeOutputLimitBytes)} byte output limit.`,
+    };
+  }
   if (result.exitCode !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim();
     return {
@@ -150,13 +244,13 @@ export type BlobReadResult =
 
 export async function readBlobText(
   programs: ProgramsCapability,
-  git: ParsedPath,
+  binaries: ToolBinaries,
   repo: string,
   hash: string,
 ): Promise<BlobReadResult> {
   const result = await runGit(
     programs,
-    git,
+    binaries,
     repo,
     ["cat-file", "blob", hash],
     blobOutputLimitBytes,
@@ -192,6 +286,64 @@ async function readOptionalFile(path: string): Promise<string | null> {
   }
 }
 
+async function exportCommitTree(
+  programs: ProgramsCapability,
+  binaries: ToolBinaries,
+  destinationRepo: string,
+  commit: string,
+  workDir: string,
+  treeDir: string,
+): Promise<
+  { readonly ok: true } | { readonly ok: false; readonly reason: string }
+> {
+  const gitDirResult = await resolveRepoGitDir(
+    programs,
+    binaries,
+    destinationRepo,
+  );
+  if (!gitDirResult.ok) return gitDirResult;
+
+  const tempIndex = join(workDir, "export.index");
+  const indexEnv = [`GIT_INDEX_FILE=${tempIndex}`];
+
+  const readTreeResult = await runGitWithEnv(
+    programs,
+    binaries,
+    indexEnv,
+    [`--git-dir=${gitDirResult.gitDir}`, "read-tree", commit],
+    65_536,
+  );
+  if (readTreeResult.exitCode !== 0) {
+    const detail = readTreeResult.stderr.trim() || readTreeResult.stdout.trim();
+    return {
+      ok: false,
+      reason: `Cannot export commit ${commit} from ${destinationRepo}: ${detail}`,
+    };
+  }
+
+  const checkoutResult = await runGitWithEnv(
+    programs,
+    binaries,
+    indexEnv,
+    [
+      `--git-dir=${gitDirResult.gitDir}`,
+      `--work-tree=${treeDir}`,
+      "checkout-index",
+      "-a",
+      "-f",
+    ],
+    65_536,
+  );
+  if (checkoutResult.exitCode !== 0) {
+    const detail = checkoutResult.stderr.trim() || checkoutResult.stdout.trim();
+    return {
+      ok: false,
+      reason: `Cannot export commit ${commit} from ${destinationRepo}: ${detail}`,
+    };
+  }
+  return { ok: true };
+}
+
 export type TestDiscoveryResult =
   | { readonly kind: "count"; readonly count: number }
   | { readonly kind: "unsupported"; readonly reason: string }
@@ -205,41 +357,27 @@ export async function discoverTestFileCount(
 ): Promise<TestDiscoveryResult> {
   const workDir = await mkdtemp(join(tmpdir(), "agent-gates-move-"));
   try {
-    const archiveFile = join(workDir, "tree.tar");
     const treeDir = join(workDir, "tree");
     await mkdir(treeDir, { recursive: true });
 
-    const archiveResult = await runGit(
+    const exported = await exportCommitTree(
       programs,
-      binaries.git,
+      binaries,
       destinationRepo,
-      ["archive", "--format=tar", `--output=${archiveFile}`, commit],
-      65_536,
+      commit,
+      workDir,
+      treeDir,
     );
-    if (archiveResult.exitCode !== 0) {
-      const detail = archiveResult.stderr.trim() || archiveResult.stdout.trim();
-      return {
-        kind: "failed",
-        reason: `Cannot export commit ${commit} from ${destinationRepo}: ${detail}`,
-      };
+    if (!exported.ok) {
+      return { kind: "failed", reason: exported.reason };
     }
 
-    const extractResult = await programs.inspect({
-      executable: binaries.tar,
-      args: ["-xf", archiveFile, "-C", treeDir],
-      timeoutMilliseconds: defaultTimeoutMs,
-      outputLimitBytes: 65_536,
-      shutdownMilliseconds: defaultShutdownMs,
-    });
-    if (extractResult.exitCode !== 0) {
-      const detail = extractResult.stderr.trim() || extractResult.stdout.trim();
-      return {
-        kind: "failed",
-        reason: `Cannot extract archive for ${commit}: ${detail}`,
-      };
-    }
-
-    const sourceNodeModules = resolve(destinationRepo, "node_modules");
+    const repoRoot = await resolveRepoTopLevel(
+      programs,
+      binaries,
+      destinationRepo,
+    );
+    const sourceNodeModules = resolve(repoRoot, "node_modules");
     const targetNodeModules = join(treeDir, "node_modules");
     if (
       (await pathExists(sourceNodeModules)) &&
@@ -256,13 +394,14 @@ export async function discoverTestFileCount(
       return { kind: "unsupported", reason: resolvedScript.reason };
     }
 
-    const testResult = await programs.inspect({
-      executable: binaries.bun,
-      args: ["test", "--cwd", treeDir, "-t", "(?!)", ...resolvedScript.args],
-      timeoutMilliseconds: defaultTimeoutMs,
-      outputLimitBytes: testOutputLimitBytes,
-      shutdownMilliseconds: defaultShutdownMs,
-    });
+    const testResult = await runWithCleanGitEnv(
+      programs,
+      binaries,
+      binaries.bun,
+      [],
+      ["test", "--cwd", treeDir, "-t", "(?!)", ...resolvedScript.args],
+      testOutputLimitBytes,
+    );
 
     const combinedOutput = `${testResult.stdout}\n${testResult.stderr}`;
     const parsed = parseBunTestDiscovery(combinedOutput);
