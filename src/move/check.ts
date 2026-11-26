@@ -18,7 +18,7 @@ function describeFinding(finding: MoveFinding): string {
     case "DOMAIN_MOVE_FILE_DROPPED":
       return `${finding.cause} ${finding.path} (source ${finding.sourceHash ?? "unknown"})`;
     case "DOMAIN_MOVE_FILE_CHANGED":
-      return `${finding.cause} ${finding.path} (source ${finding.sourceHash ?? "unknown"}, destination ${finding.destinationHash ?? "unknown"})`;
+      return `${finding.cause} ${finding.path} (source mode ${finding.sourceMode ?? "unknown"} hash ${finding.sourceHash ?? "unknown"}, destination mode ${finding.destinationMode ?? "unknown"} hash ${finding.destinationHash ?? "unknown"})`;
     case "DOMAIN_MOVE_REFERENCE_DANGLING":
       return `${finding.cause} ${finding.path} references ${finding.reference ?? "unknown"}`;
     case "DOMAIN_MOVE_SOURCE_KEPT":
@@ -195,13 +195,13 @@ export function createMoveCheck(
         commandIdentity,
         causeCode: "DOMAIN_MOVE_FILE_CHANGED",
         trigger:
-          "One or more destination files have a different git blob hash than the source.",
+          "One or more destination files have a different git blob hash or file mode than the source.",
         repairAction:
-          "Restore exact source bytes for the changed files in the destination commit and run move check again.",
+          "Restore the exact source bytes and source mode for the changed files in the destination commit (for a lost executable bit, run git update-index --chmod=+x <path> and commit), then run move check again.",
         guidance: {
           next: {
             kind: "instruction",
-            text: "Match the source git blob hashes in the destination commit and re-run move check.",
+            text: "Match the source git blob hashes and file modes in the destination commit and re-run move check.",
           },
         },
         independentObservable: `${commandIdentity}:file-changed`,
