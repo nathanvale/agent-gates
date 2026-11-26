@@ -30,6 +30,7 @@ describe("move check symlink traversal order", () => {
         "docs/README.md": "Read [the guide](guide.md).\n",
         "guide.md": "# Root guide\n",
         "sub/guide.md": "# Sub guide\n",
+        "sub/nested/keep.txt": "present\n",
       });
       writeSymlink(source, "docs/guide.md", "../alias/../guide.md");
       writeSymlink(source, "alias", "sub/nested");
@@ -38,6 +39,7 @@ describe("move check symlink traversal order", () => {
       writeFiles(destination, {
         "docs/README.md": "Read [the guide](guide.md).\n",
         "guide.md": "# Root guide\n",
+        "sub/nested/keep.txt": "present\n",
       });
       writeSymlink(destination, "docs/guide.md", "../alias/../guide.md");
       writeSymlink(destination, "alias", "sub/nested");
@@ -91,6 +93,7 @@ describe("move check symlink traversal order", () => {
         "docs/README.md": "Read [the guide](guide.md).\n",
         "guide.md": "# Root guide\n",
         "sub/guide.md": "# Sub guide\n",
+        "sub/nested/keep.txt": "present\n",
       });
       writeSymlink(source, "docs/guide.md", "../alias/../guide.md");
       writeSymlink(source, "alias", "sub/nested");
@@ -100,6 +103,7 @@ describe("move check symlink traversal order", () => {
         "docs/README.md": "Read [the guide](guide.md).\n",
         "guide.md": "# Root guide\n",
         "sub/guide.md": "# Sub guide\n",
+        "sub/nested/keep.txt": "present\n",
       });
       writeSymlink(destination, "docs/guide.md", "../alias/../guide.md");
       writeSymlink(destination, "alias", "sub/nested");
